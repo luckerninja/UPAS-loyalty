@@ -1,0 +1,27 @@
+{
+  "canisters": {
+    "upas_loyality_backend": {
+      "candid": "src/upas_loyality_backend/upas_loyality_backend.did",
+      "package": "upas_loyality_backend",
+      "type": "rust"
+    },
+    "upas_loyality_frontend": {
+      "dependencies": [
+        "upas_loyality_backend"
+      ],
+      "source": [
+        "src/upas_loyality_frontend/dist"
+      ],
+      "type": "assets",
+      "workspace": "upas_loyality_frontend"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}
