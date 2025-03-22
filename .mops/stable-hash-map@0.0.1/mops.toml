@@ -1,0 +1,11 @@
+[package]
+name = "stable-hash-map"
+version = "0.0.1"
+description = "Motoko stable hash map"
+repository = "https://github.com/fury02/stable-hash-map"
+keywords = [ 
+    "stable-hash-map",  
+    "hashmap", 
+    "hash-map", 
+    "hash map",
+    ]

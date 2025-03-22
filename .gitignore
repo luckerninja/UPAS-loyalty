@@ -24,6 +24,4 @@ dist/
 # environment variables
 .env
 
-Cargo.toml
-
-package-lock.json
+PRD.md

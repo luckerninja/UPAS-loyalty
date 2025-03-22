@@ -1,25 +1,18 @@
 {
   "canisters": {
-    "upas_loyality_backend": {
-      "candid": "src/upas_loyality_backend/upas_loyality_backend.did",
-      "package": "upas_loyality_backend",
-      "type": "rust"
+    "loyalty": {
+      "main": "src/loyalty/main.mo",
+      "type": "motoko"
     },
-    "upas_loyality_frontend": {
-      "dependencies": [
-        "upas_loyality_backend"
-      ],
-      "source": [
-        "src/upas_loyality_frontend/dist"
-      ],
-      "type": "assets",
-      "workspace": "upas_loyality_frontend"
+    "icrc1_ledger_canister": {
+      "type": "custom",
+      "candid": "https://github.com/dfinity/ic/releases/download/ledger-suite-icrc-2024-10-17/ledger.did",
+      "wasm": "https://github.com/dfinity/ic/releases/download/ledger-suite-icrc-2024-10-17/ic-icrc1-ledger.wasm.gz"
     }
   },
   "defaults": {
     "build": {
-      "args": "",
-      "packtool": ""
+      "packtool": "mops sources"
     }
   },
   "output_env_file": ".env",
