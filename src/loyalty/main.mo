@@ -7,7 +7,6 @@ import Time "mo:base/Time";
 import Array "mo:base/Array";
 import Text "mo:base/Text";
 import Nat "mo:base/Nat";
-import ECDSA "mo:ecdsa";
 
 shared(msg) actor class LoyaltyProgram() {
     private let owner = msg.caller;
@@ -91,28 +90,13 @@ shared(msg) actor class LoyaltyProgram() {
         };
     };
 
-    public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal, timestamp: Int, signature: Blob) : async () {
-        let currentTime = Time.now();
-        if (not Credential.isValidTimestamp(timestamp, currentTime)) {
-            throw Error.reject("Invalid timestamp - must be within 24 hours");
-        };
-
+    public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal) : async () {
         switch (BTree.get(stores, Principal.compare, caller)) {
             case (?store) {
                 let scheme = Array.find<Credential.CredentialScheme>(store.schemes, func(s) = s.id == schemeId);
                 switch (scheme) {
                     case (?s) {
-                        let message = Credential.createSignatureMessage(
-                            schemeId,
-                            holderId,
-                            timestamp,
-                            s.reward
-                        );
-
-                        let isValid = true;
-                        if (not isValid) {
-                            throw Error.reject("Invalid signature");
-                        };
+                        let timestamp = Time.now();
 
                         let credential : Credential.IssuedCredential = {
                             schemeId = schemeId;
@@ -120,13 +104,12 @@ shared(msg) actor class LoyaltyProgram() {
                             holderId = holderId;
                             timestamp = timestamp;
                             reward = s.reward;
-                            signature = signature;
                         };
 
                         let history : Credential.IssueHistory = {
                             schemeId = schemeId;
                             holderId = holderId;
-                            timestamp = Time.now();
+                            timestamp = timestamp;
                             reward = s.reward;
                         };
 
@@ -165,25 +148,5 @@ shared(msg) actor class LoyaltyProgram() {
             case (?store) ?store.issueHistory;
             case null null;
         };
-    };
-    
-    public shared({ caller }) func getCaller() : async Principal {
-        caller
-    };
-
-    public shared({ caller }) func verifyMessage(
-        message: Text,
-        signature: Blob,
-        publicKey: Blob
-    ) : async Bool {
-        // Verify that caller matches the public key
-        let derivedPrincipal = Principal.fromPublicKey(publicKey);
-        if (derivedPrincipal != caller) {
-            return false;
-        };
-        
-        
-        // Verify signature
-        ECDSA.verify(signature, Text.encodeUtf8(message), publicKey)
     };
 }

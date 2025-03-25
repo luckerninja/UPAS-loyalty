@@ -25,3 +25,5 @@ dist/
 .env
 
 PRD.md
+
+.mops
