@@ -4,6 +4,10 @@
       "main": "src/loyalty/main.mo",
       "type": "motoko"
     },
+    "ex": {
+      "main": "src/ex/main.mo",
+      "type": "motoko"
+    },
     "icrc1_ledger_canister": {
       "type": "custom",
       "candid": "https://github.com/dfinity/ic/releases/download/ledger-suite-icrc-2024-10-17/ledger.did",

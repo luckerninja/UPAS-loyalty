@@ -8,10 +8,13 @@ import Array "mo:base/Array";
 import Text "mo:base/Text";
 import Nat "mo:base/Nat";
 
-shared(msg) actor class LoyaltyProgram() {
+shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal, icrc1LedgerCanisterId: Principal) {
     private let owner = msg.caller;
+    private let tokenMinter = externalCanisterId;
+    private let icrc1LedgerCanister = icrc1LedgerCanisterId;
     private stable let stores = BTree.init<Principal, Store.Store>(?8);
     private stable let userCredentials = BTree.init<Principal, [Credential.IssuedCredential]>(?8);
+    private stable let userPoints = BTree.init<Principal, Nat>(?8);
 
     public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text) : async ?Store.Store {
         assert(caller == owner);
@@ -148,5 +151,34 @@ shared(msg) actor class LoyaltyProgram() {
             case (?store) ?store.issueHistory;
             case null null;
         };
+    };
+
+    public shared({ caller }) func addPoints(userPrincipal: Principal, amount: Nat) : async () {
+        if (not isExternalCanister(caller)) {
+            throw Error.reject("Unauthorized: only external canister can add points");
+        };
+
+        let currentPoints = switch (BTree.get(userPoints, Principal.compare, userPrincipal)) {
+            case (?points) points;
+            case null 0;
+        };
+
+        ignore BTree.insert(
+            userPoints,
+            Principal.compare,
+            userPrincipal,
+            currentPoints + amount
+        );
+    };
+
+    public shared query func getPoints(userPrincipal: Principal) : async Nat {
+        switch (BTree.get(userPoints, Principal.compare, userPrincipal)) {
+            case (?points) points;
+            case null 0;
+        }
+    };
+
+    private func isExternalCanister(caller: Principal) : Bool {
+        caller == tokenMinter
     };
 }
