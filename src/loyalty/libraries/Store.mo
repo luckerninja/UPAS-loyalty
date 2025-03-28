@@ -7,7 +7,6 @@ module {
         owner: Principal;
         name: Text;
         description: Text;
-        points: Int;
         schemes: [Credential.CredentialScheme];
         issueHistory: [Credential.IssueHistory];
     };

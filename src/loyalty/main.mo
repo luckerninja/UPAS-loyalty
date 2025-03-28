@@ -7,14 +7,16 @@ import Time "mo:base/Time";
 import Array "mo:base/Array";
 import Text "mo:base/Text";
 import Nat "mo:base/Nat";
+import ICRC1 "canister:icrc1_ledger_canister";
+import Debug "mo:base/Debug";
+import Result "mo:base/Result";
 
-shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal, icrc1LedgerCanisterId: Principal) {
+shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private let owner = msg.caller;
     private let tokenMinter = externalCanisterId;
-    private let icrc1LedgerCanister = icrc1LedgerCanisterId;
     private stable let stores = BTree.init<Principal, Store.Store>(?8);
     private stable let userCredentials = BTree.init<Principal, [Credential.IssuedCredential]>(?8);
-    private stable let userPoints = BTree.init<Principal, Nat>(?8);
+    private stable let storeTokens = BTree.init<Principal, Nat>(?8);
 
     public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text) : async ?Store.Store {
         assert(caller == owner);
@@ -23,7 +25,6 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal, icrc1Ledge
             owner = principal;
             name = name;
             description = description;
-            points = 0;
             schemes = [];
             issueHistory = [];
         };
@@ -93,52 +94,97 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal, icrc1Ledge
         };
     };
 
-    public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal) : async () {
+    public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal) : async Result.Result<Nat, ICRC1.TransferError> {
         switch (BTree.get(stores, Principal.compare, caller)) {
             case (?store) {
                 let scheme = Array.find<Credential.CredentialScheme>(store.schemes, func(s) = s.id == schemeId);
                 switch (scheme) {
                     case (?s) {
-                        let timestamp = Time.now();
-
-                        let credential : Credential.IssuedCredential = {
-                            schemeId = schemeId;
-                            issuerId = caller;
-                            holderId = holderId;
-                            timestamp = timestamp;
-                            reward = s.reward;
+                        let storeBalance = switch (BTree.get(storeTokens, Principal.compare, caller)) {
+                            case (?balance) balance;
+                            case null 0;
                         };
 
-                        let history : Credential.IssueHistory = {
-                            schemeId = schemeId;
-                            holderId = holderId;
-                            timestamp = timestamp;
-                            reward = s.reward;
+                        if (storeBalance < s.reward) {
+                            return #err(#InsufficientFunds({ balance = storeBalance }));
                         };
 
-                        // Update store history
-                        let updatedStore = {
-                            store with 
-                            issueHistory = Array.append(store.issueHistory, [history])
+                        let transferArgs : ICRC1.TransferArg = {
+                            memo = null;
+                            amount = s.reward;
+                            fee = null;
+                            from_subaccount = null;
+                            to = {
+                                owner = holderId;
+                                subaccount = null;
+                            };
+                            created_at_time = null;
                         };
-                        ignore BTree.insert(stores, Principal.compare, caller, updatedStore);
 
-                        // Update user credentials
-                        let existingCredentials = switch (BTree.get(userCredentials, Principal.compare, holderId)) {
-                            case (?creds) creds;
-                            case null [];
+                        Debug.print("Transferring to account: " # debug_show({
+                            owner = holderId;
+                            subaccount = null;
+                        }));
+
+                        try {
+                            let transferResult = await ICRC1.icrc1_transfer(transferArgs);
+                            switch (transferResult) {
+                                case (#Err(transferError)) {
+                                    #err(transferError)
+                                };
+                                case (#Ok(blockIndex)) { 
+                                    ignore BTree.insert(
+                                        storeTokens, 
+                                        Principal.compare, 
+                                        caller, 
+                                        storeBalance - s.reward
+                                    );
+
+                                    let timestamp = Time.now();
+
+                                    let credential : Credential.IssuedCredential = {
+                                        schemeId = schemeId;
+                                        issuerId = caller;
+                                        holderId = holderId;
+                                        timestamp = timestamp;
+                                        reward = s.reward;
+                                    };
+
+                                    let history : Credential.IssueHistory = {
+                                        schemeId = schemeId;
+                                        holderId = holderId;
+                                        timestamp = timestamp;
+                                        reward = s.reward;
+                                    };
+
+                                    let updatedStore = {
+                                        store with 
+                                        issueHistory = Array.append(store.issueHistory, [history])
+                                    };
+                                    ignore BTree.insert(stores, Principal.compare, caller, updatedStore);
+
+                                    let existingCredentials = switch (BTree.get(userCredentials, Principal.compare, holderId)) {
+                                        case (?creds) creds;
+                                        case null [];
+                                    };
+                                    ignore BTree.insert(
+                                        userCredentials, 
+                                        Principal.compare, 
+                                        holderId, 
+                                        Array.append(existingCredentials, [credential])
+                                    );
+
+                                    #ok(blockIndex)
+                                };
+                            };
+                        } catch (error : Error) {
+                            #err(#GenericError({ message = Error.message(error); error_code = 0 }))
                         };
-                        ignore BTree.insert(
-                            userCredentials, 
-                            Principal.compare, 
-                            holderId, 
-                            Array.append(existingCredentials, [credential])
-                        );
                     };
-                    case null throw Error.reject("Scheme not found");
+                    case null #err(#GenericError({ message = "Scheme not found"; error_code = 1 }));
                 };
             };
-            case null throw Error.reject("Store not found");
+            case null #err(#GenericError({ message = "Store not found"; error_code = 2 }));
         };
     };
 
@@ -153,27 +199,22 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal, icrc1Ledge
         };
     };
 
-    public shared({ caller }) func addPoints(userPrincipal: Principal, amount: Nat) : async () {
-        if (not isExternalCanister(caller)) {
-            throw Error.reject("Unauthorized: only external canister can add points");
+    public shared({ caller }) func addStoreTokens(storePrincipal: Principal, amount: Nat) : async () {
+        if (caller != tokenMinter) {
+            throw Error.reject("Unauthorized: only token minter can add tokens");
         };
 
-        let currentPoints = switch (BTree.get(userPoints, Principal.compare, userPrincipal)) {
-            case (?points) points;
+        let currentBalance = switch (BTree.get(storeTokens, Principal.compare, storePrincipal)) {
+            case (?balance) balance;
             case null 0;
         };
 
-        ignore BTree.insert(
-            userPoints,
-            Principal.compare,
-            userPrincipal,
-            currentPoints + amount
-        );
+        ignore BTree.insert(storeTokens, Principal.compare, storePrincipal, currentBalance + amount);
     };
 
-    public shared query func getPoints(userPrincipal: Principal) : async Nat {
-        switch (BTree.get(userPoints, Principal.compare, userPrincipal)) {
-            case (?points) points;
+    public query func getStoreTokens(storePrincipal: Principal) : async Nat {
+        switch (BTree.get(storeTokens, Principal.compare, storePrincipal)) {
+            case (?balance) balance;
             case null 0;
         }
     };
