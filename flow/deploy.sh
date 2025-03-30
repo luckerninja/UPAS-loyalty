@@ -6,6 +6,8 @@ CONTROLLER_ID=$(dfx identity get-principal)
 
 EX_CANISTER_ID=$(dfx canister id ex)
 
+LOYALTY_CANISTER_ID=$(dfx canister id loyalty)
+
 dfx deploy icrc1_ledger_canister --argument "(variant { Init =
 record {
      token_symbol = \"3T\";
@@ -27,7 +29,5 @@ dfx deploy ex --argument "(principal \"${CONTROLLER_ID}\")"
 ICRC1_LEDGER_CANISTER_ID=$(dfx canister id icrc1_ledger_canister)
 
 dfx --identity controller_upas deploy loyalty --argument "(principal \"${EX_CANISTER_ID}\", principal \"${ICRC1_LEDGER_CANISTER_ID}\")"
-
-LOYALTY_CANISTER_ID=$(dfx canister id loyalty)
 
 dfx --identity controller_upas canister call ex setLoyaltyActor "(\"${LOYALTY_CANISTER_ID}\")"

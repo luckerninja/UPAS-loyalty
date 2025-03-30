@@ -10,6 +10,11 @@ import Nat "mo:base/Nat";
 import ICRC1 "canister:icrc1_ledger_canister";
 import Debug "mo:base/Debug";
 import Result "mo:base/Result";
+import Auth "./libraries/Auth";
+import Lib "mo:ed25519";
+import ECDSA "mo:ecdsa";
+import Curve "mo:ecdsa/curve";
+import Blob "mo:base/Blob";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private let owner = msg.caller;
@@ -18,8 +23,12 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private stable let userCredentials = BTree.init<Principal, [Credential.IssuedCredential]>(?8);
     private stable let storeTokens = BTree.init<Principal, Nat>(?8);
 
-    public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text) : async ?Store.Store {
+    public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text, publicKeyNat: [Nat8]) : async ?Store.Store {
         assert(caller == owner);
+
+        let curve = Curve.Curve(#prime256v1);
+
+        let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyNat));
 
         let store : Store.Store = {
             owner = principal;
@@ -27,6 +36,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
             description = description;
             schemes = [];
             issueHistory = [];
+            publicKey = publicKey;
         };
         
         BTree.insert(
@@ -95,6 +105,13 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     };
 
     public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal) : async Result.Result<Nat, ICRC1.TransferError> {
+        if (not Auth.isSelfAuthenticating(caller)) {
+            return #err(#GenericError({ 
+                message = "Caller must use self-authenticating ID"; 
+                error_code = 3 
+            }));
+        };
+
         switch (BTree.get(stores, Principal.compare, caller)) {
             case (?store) {
                 let scheme = Array.find<Credential.CredentialScheme>(store.schemes, func(s) = s.id == schemeId);
@@ -217,6 +234,10 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
             case (?balance) balance;
             case null 0;
         }
+    };
+
+    public query func verifySelfAuthenticating(principal: Principal) : async Bool {
+        Auth.isSelfAuthenticating(principal)
     };
 
     private func isExternalCanister(caller: Principal) : Bool {
