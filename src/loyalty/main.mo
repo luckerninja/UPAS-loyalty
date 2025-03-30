@@ -15,8 +15,11 @@ import Lib "mo:ed25519";
 import ECDSA "mo:ecdsa";
 import Curve "mo:ecdsa/curve";
 import Blob "mo:base/Blob";
+import Signature "./libraries/Signature";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
+    private let IS_PRODUCTION = false;
+
     private let owner = msg.caller;
     private let tokenMinter = externalCanisterId;
     private stable let stores = BTree.init<Principal, Store.Store>(?8);
@@ -26,7 +29,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text, publicKeyNat: [Nat8]) : async ?Store.Store {
         assert(caller == owner);
 
-        let curve = Curve.Curve(#prime256v1);
+        let curve = Curve.Curve(#secp256k1);
 
         let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyNat));
 
@@ -104,7 +107,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         };
     };
 
-    public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal) : async Result.Result<Nat, ICRC1.TransferError> {
+    public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal, signature: [Nat8], timestamp: Int) : async Result.Result<Nat, ICRC1.TransferError> {
         if (not Auth.isSelfAuthenticating(caller)) {
             return #err(#GenericError({ 
                 message = "Caller must use self-authenticating ID"; 
@@ -126,6 +129,10 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
                             return #err(#InsufficientFunds({ balance = storeBalance }));
                         };
 
+                        if (IS_PRODUCTION and not Credential.isValidTimestamp(timestamp, Time.now())) {
+                            return #err(#GenericError({ message = "Invalid timestamp"; error_code = 0 }));
+                        };
+
                         let transferArgs : ICRC1.TransferArg = {
                             memo = null;
                             amount = s.reward;
@@ -136,6 +143,12 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
                                 subaccount = null;
                             };
                             created_at_time = null;
+                        };
+
+                        let credential : Credential.IssuedCredential = Credential.buildCredential(schemeId, caller, holderId, timestamp, s.reward);
+
+                        if (not Signature.verifySignature(store.publicKey, Signature.credentialToMessage(credential), signature)) {
+                            return #err(#GenericError({ message = "Invalid signature"; error_code = 0 }));
                         };
 
                         Debug.print("Transferring to account: " # debug_show({
@@ -157,22 +170,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
                                         storeBalance - s.reward
                                     );
 
-                                    let timestamp = Time.now();
-
-                                    let credential : Credential.IssuedCredential = {
-                                        schemeId = schemeId;
-                                        issuerId = caller;
-                                        holderId = holderId;
-                                        timestamp = timestamp;
-                                        reward = s.reward;
-                                    };
-
-                                    let history : Credential.IssueHistory = {
-                                        schemeId = schemeId;
-                                        holderId = holderId;
-                                        timestamp = timestamp;
-                                        reward = s.reward;
-                                    };
+                                    let history : Credential.IssueHistory = Credential.buildIssueHistory(schemeId, holderId, timestamp, s.reward);
 
                                     let updatedStore = {
                                         store with 

@@ -36,4 +36,27 @@ module {
         let diff = currentTime - timestamp;
         diff >= -oneDay and diff <= oneDay
     };
+
+    public func buildCredential(schemeId: Text, issuerId: Principal, holderId: Principal, timestamp: Int, reward: Nat) : IssuedCredential {
+        let credential: IssuedCredential = {
+            schemeId = schemeId;
+            issuerId = issuerId;
+            holderId = holderId;
+            timestamp = timestamp;
+            reward = reward;
+        };
+
+        return credential;
+    };
+
+    public func buildIssueHistory(schemeId: Text, holderId: Principal, timestamp: Int, reward: Nat) : IssueHistory {
+        let issueHistory: IssueHistory = {
+            schemeId = schemeId;
+            holderId = holderId;
+            timestamp = timestamp;
+            reward = reward;
+        };
+
+        return issueHistory;
+    };
 }

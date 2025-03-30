@@ -9,7 +9,7 @@ import Int "mo:base/Int";
 
 module {
     public func verifySignature(publicKey: ECDSA.PublicKey, message: [Nat8], signatureRawBytes: [Nat8]) : Bool {
-        let curve = Curve.Curve(#prime256v1);
+        let curve = Curve.Curve(#secp256k1);
         let ?signature = ECDSA.deserializeSignatureRaw(Blob.fromArray(signatureRawBytes));
 
         return ECDSA.verify(curve, publicKey, Blob.fromArray(message).vals(), signature);
