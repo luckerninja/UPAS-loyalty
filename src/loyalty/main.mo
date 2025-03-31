@@ -193,10 +193,6 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
 
     // Main credential issuance function
     public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal, signature: [Nat8], timestamp: Int) : async Result.Result<Nat, ICRC1.TransferError> {
-        if (not Auth.isSelfAuthenticating(caller)) {
-            return #err(#GenericError({ message = "Caller must use self-authenticating ID"; error_code = 3 }));
-        };
-
         switch (BTree.get(stores, Principal.compare, caller)) {
             case (?store) {
                 switch (Array.find<Credential.CredentialScheme>(store.schemes, func(s) = s.id == schemeId)) {
@@ -279,5 +275,12 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         let curve = Curve.Curve(#secp256k1);
         let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
         Signature.verifySignature(publicKey, message, signature)
+    };
+
+    public shared({ caller }) func verifyCredential(schemeId: Text, holderId: Principal, timestamp: Int, signature: [Nat8], publicKeyRawBytes: [Nat8]) : async Bool {
+        let credential = Credential.buildCredential(schemeId, caller, holderId, timestamp, 0);
+        let curve = Curve.Curve(#secp256k1);
+        let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
+        Signature.verifySignature(publicKey, Signature.credentialToMessage(credential), signature)
     };
 }

@@ -2,6 +2,9 @@
 
 dfx identity use controller_upas
 
+dfx --identity controller_upas canister create loyalty
+dfx --identity controller_upas canister create ex
+
 CONTROLLER_ID=$(dfx identity get-principal)
 
 EX_CANISTER_ID=$(dfx canister id ex)
