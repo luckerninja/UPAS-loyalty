@@ -8,10 +8,8 @@ import Array "mo:base/Array";
 import Text "mo:base/Text";
 import Nat "mo:base/Nat";
 import ICRC1 "canister:icrc1_ledger_canister";
-import Debug "mo:base/Debug";
 import Result "mo:base/Result";
 import Auth "./libraries/Auth";
-import Lib "mo:ed25519";
 import ECDSA "mo:ecdsa";
 import Curve "mo:ecdsa/curve";
 import Blob "mo:base/Blob";
@@ -107,93 +105,118 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         };
     };
 
+    // Check store balance
+    private func checkStoreBalance(store: Store.Store, scheme: Credential.CredentialScheme) : Result.Result<Nat, ICRC1.TransferError> {
+        let storeBalance = switch (BTree.get(storeTokens, Principal.compare, store.owner)) {
+            case (?balance) balance;
+            case null 0;
+        };
+
+        if (storeBalance < scheme.reward) {
+            #err(#InsufficientFunds({ balance = storeBalance }))
+        } else {
+            #ok(storeBalance)
+        };
+    };
+
+    // Validate signature and timestamp
+    private func validateCredential(store: Store.Store, credential: Credential.IssuedCredential, signature: [Nat8]) : Result.Result<(), ICRC1.TransferError> {
+        if (IS_PRODUCTION and not Credential.isValidTimestamp(credential.timestamp, Time.now())) {
+            return #err(#GenericError({ message = "Invalid timestamp"; error_code = 0 }));
+        };
+
+        if (not Signature.verifySignature(store.publicKey, Signature.credentialToMessage(credential), signature)) {
+            return #err(#GenericError({ message = "Invalid signature"; error_code = 0 }));
+        };
+
+        #ok()
+    };
+
+    // Execute token transfer
+    private func transferTokens(to: Principal, amount: Nat) : async Result.Result<Nat, ICRC1.TransferError> {
+        let transferArgs : ICRC1.TransferArg = {
+            memo = null;
+            amount = amount;
+            fee = null;
+            from_subaccount = null;
+            to = { owner = to; subaccount = null; };
+            created_at_time = null;
+        };
+
+        try {
+            let result = await ICRC1.icrc1_transfer(transferArgs);
+            switch(result) {
+                case (#Ok(blockIndex)) #ok(blockIndex);
+                case (#Err(err)) #err(err);
+            }
+        } catch (error : Error) {
+            #err(#GenericError({ message = Error.message(error); error_code = 0 }))
+        };
+    };
+
+    // Update state after successful transfer
+    private func updateState(store: Store.Store, credential: Credential.IssuedCredential, storeBalance: Nat) {
+        // Update store balance
+        ignore BTree.insert(
+            storeTokens, 
+            Principal.compare, 
+            store.owner, 
+            storeBalance - credential.reward
+        );
+
+        // Update issue history
+        let history = Credential.buildIssueHistory(
+            credential.schemeId, 
+            credential.holderId, 
+            credential.timestamp, 
+            credential.reward
+        );
+
+        let updatedStore = {
+            store with 
+            issueHistory = Array.append(store.issueHistory, [history])
+        };
+        ignore BTree.insert(stores, Principal.compare, store.owner, updatedStore);
+
+        // Update user credentials
+        let existingCredentials = switch (BTree.get(userCredentials, Principal.compare, credential.holderId)) {
+            case (?creds) creds;
+            case null [];
+        };
+        ignore BTree.insert(
+            userCredentials, 
+            Principal.compare, 
+            credential.holderId, 
+            Array.append(existingCredentials, [credential])
+        );
+    };
+
+    // Main credential issuance function
     public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal, signature: [Nat8], timestamp: Int) : async Result.Result<Nat, ICRC1.TransferError> {
         if (not Auth.isSelfAuthenticating(caller)) {
-            return #err(#GenericError({ 
-                message = "Caller must use self-authenticating ID"; 
-                error_code = 3 
-            }));
+            return #err(#GenericError({ message = "Caller must use self-authenticating ID"; error_code = 3 }));
         };
 
         switch (BTree.get(stores, Principal.compare, caller)) {
             case (?store) {
-                let scheme = Array.find<Credential.CredentialScheme>(store.schemes, func(s) = s.id == schemeId);
-                switch (scheme) {
-                    case (?s) {
-                        let storeBalance = switch (BTree.get(storeTokens, Principal.compare, caller)) {
-                            case (?balance) balance;
-                            case null 0;
-                        };
+                switch (Array.find<Credential.CredentialScheme>(store.schemes, func(s) = s.id == schemeId)) {
+                    case (?scheme) {
+                        // Check balance
+                        let #ok(storeBalance) = checkStoreBalance(store, scheme) else return #err(#InsufficientFunds({ balance = 0 }));
 
-                        if (storeBalance < s.reward) {
-                            return #err(#InsufficientFunds({ balance = storeBalance }));
-                        };
+                        // Create credential
+                        let credential = Credential.buildCredential(schemeId, caller, holderId, timestamp, scheme.reward);
 
-                        if (IS_PRODUCTION and not Credential.isValidTimestamp(timestamp, Time.now())) {
-                            return #err(#GenericError({ message = "Invalid timestamp"; error_code = 0 }));
-                        };
+                        // Validate signature and timestamp
+                        let #ok() = validateCredential(store, credential, signature) else return #err(#GenericError({ message = "Validation failed"; error_code = 0 }));
 
-                        let transferArgs : ICRC1.TransferArg = {
-                            memo = null;
-                            amount = s.reward;
-                            fee = null;
-                            from_subaccount = null;
-                            to = {
-                                owner = holderId;
-                                subaccount = null;
+                        // Execute transfer
+                        switch(await transferTokens(holderId, scheme.reward)) {
+                            case (#ok(blockIndex)) {
+                                updateState(store, credential, storeBalance);
+                                #ok(blockIndex)
                             };
-                            created_at_time = null;
-                        };
-
-                        let credential : Credential.IssuedCredential = Credential.buildCredential(schemeId, caller, holderId, timestamp, s.reward);
-
-                        if (not Signature.verifySignature(store.publicKey, Signature.credentialToMessage(credential), signature)) {
-                            return #err(#GenericError({ message = "Invalid signature"; error_code = 0 }));
-                        };
-
-                        Debug.print("Transferring to account: " # debug_show({
-                            owner = holderId;
-                            subaccount = null;
-                        }));
-
-                        try {
-                            let transferResult = await ICRC1.icrc1_transfer(transferArgs);
-                            switch (transferResult) {
-                                case (#Err(transferError)) {
-                                    #err(transferError)
-                                };
-                                case (#Ok(blockIndex)) { 
-                                    ignore BTree.insert(
-                                        storeTokens, 
-                                        Principal.compare, 
-                                        caller, 
-                                        storeBalance - s.reward
-                                    );
-
-                                    let history : Credential.IssueHistory = Credential.buildIssueHistory(schemeId, holderId, timestamp, s.reward);
-
-                                    let updatedStore = {
-                                        store with 
-                                        issueHistory = Array.append(store.issueHistory, [history])
-                                    };
-                                    ignore BTree.insert(stores, Principal.compare, caller, updatedStore);
-
-                                    let existingCredentials = switch (BTree.get(userCredentials, Principal.compare, holderId)) {
-                                        case (?creds) creds;
-                                        case null [];
-                                    };
-                                    ignore BTree.insert(
-                                        userCredentials, 
-                                        Principal.compare, 
-                                        holderId, 
-                                        Array.append(existingCredentials, [credential])
-                                    );
-
-                                    #ok(blockIndex)
-                                };
-                            };
-                        } catch (error : Error) {
-                            #err(#GenericError({ message = Error.message(error); error_code = 0 }))
+                            case (#err(err)) #err(err);
                         };
                     };
                     case null #err(#GenericError({ message = "Scheme not found"; error_code = 1 }));
@@ -240,5 +263,21 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
 
     private func isExternalCanister(caller: Principal) : Bool {
         caller == tokenMinter
+    };
+
+
+
+    // FOR TESTING
+
+    public query func deserializePublicKey(publicKeyRawBytes: [Nat8]) : async ?ECDSA.PublicKey {
+        let curve = Curve.Curve(#secp256k1);
+        let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
+        ?publicKey
+    };
+
+    public query func verifySignature(publicKeyRawBytes: [Nat8], message: [Nat8], signature: [Nat8]) : async Bool {
+        let curve = Curve.Curve(#secp256k1);
+        let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
+        Signature.verifySignature(publicKey, message, signature)
     };
 }
