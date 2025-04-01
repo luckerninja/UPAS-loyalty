@@ -13,6 +13,7 @@ import Auth "./libraries/Auth";
 import ECDSA "mo:ecdsa";
 import Curve "mo:ecdsa/curve";
 import Blob "mo:base/Blob";
+import Debug "mo:base/Debug";
 import Signature "./libraries/Signature";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
@@ -199,6 +200,8 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
                     case (?scheme) {
                         // Check balance
                         let #ok(storeBalance) = checkStoreBalance(store, scheme) else return #err(#InsufficientFunds({ balance = 0 }));
+                        
+                        Debug.print(debug_show(Credential.buildCredential(schemeId, caller, holderId, timestamp, scheme.reward)));
 
                         // Create credential
                         let credential = Credential.buildCredential(schemeId, caller, holderId, timestamp, scheme.reward);
@@ -278,7 +281,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     };
 
     public shared({ caller }) func verifyCredential(schemeId: Text, holderId: Principal, timestamp: Int, signature: [Nat8], publicKeyRawBytes: [Nat8]) : async Bool {
-        let credential = Credential.buildCredential(schemeId, caller, holderId, timestamp, 0);
+        let credential = Credential.buildCredential(schemeId, caller, holderId, timestamp, 100);
         let curve = Curve.Curve(#secp256k1);
         let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
         Signature.verifySignature(publicKey, Signature.credentialToMessage(credential), signature)

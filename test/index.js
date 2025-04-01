@@ -10,11 +10,11 @@ function generateKeysAndSignMessage() {
     const publicKey = keyPair.getPublic('array', 'uncompressed');
 
     // Create test data for credential
-    const schemeId = "test_scheme";
-    const issuerId = "d3bjt-52ql3-x6mpz-jfmmc-2qtrn-hbs37-mvaub-jzxjt-cibj4-luxho-iqe";
+    const issuerId = "h45c6-kpdwh-ayjrp-hb4eg-f7wf6-kl4wb-6rwhr-widwg-nb6lc-6b2ad-vae";
+    const schemeId = `${issuerId}test_scheme`;
     const holderId = "aaaaa-aa";
     const timestamp = Date.now() * 1_000_000;
-    const reward = 0;
+    const reward = 100;
 
     // Debug message construction
     const message_parts = [
@@ -52,10 +52,25 @@ function generateKeysAndSignMessage() {
     // Create commands
     const deserializeCommand = `dfx canister call loyalty deserializePublicKey "(${formatArray(publicKey)})"`;
     const verifyCommand = `dfx canister call loyalty verifySignature "(${formatArray(publicKey)}, ${formatArray(Array.from(message))}, ${formatArray(signature)})"`;
-    const verifyCredentialCommand = `dfx canister call loyalty verifyCredential "(\\"${schemeId}\\", principal \\"${holderId}\\", ${timestamp}, ${formatArray(signature_credential)}, ${formatArray(publicKey)})"`;
+    const verifyCredentialCommand = `dfx --identity store_upas canister call loyalty verifyCredential "(\\"${schemeId}\\", principal \\"${holderId}\\", ${timestamp}, ${formatArray(signature_credential)}, ${formatArray(publicKey)})"`;
+    // addStore(principal: Principal, name: Text, description: Text, publicKeyNat: [Nat8])
+    const addStoreCommand = `dfx --identity controller_upas canister call loyalty addStore '(principal "${issuerId}", "Store Name", "Store Description", ${formatArray(publicKey)})'`;
+    // public query func getStore(owner: Principal) : async ?Store.Store
+    const getStoreCommand = `dfx --identity controller_upas canister call loyalty getStore '(principal "${issuerId}")'`;
+    // public shared({ caller }) func publishCredentialScheme(name: Text, description: Text, metadata: Text, reward: Nat) : async Text
+    const publishCredentialSchemeCommand = `dfx --identity store_upas canister call loyalty publishCredentialScheme '("test_scheme", "Test Description", "Test Metadata", 100)'`;
+    
+    // public shared({ caller }) func mintAndTransferToStore(storePrincipal: Principal, amount: Nat) : async Result.Result<Nat, Text> 
+    const mintAndTransferToStoreCommand = `dfx --identity controller_upas canister call ex mintAndTransferToStore '(principal "${issuerId}", 1000)'`;
+
+    // public shared({ caller }) func issueCredential(schemeId: Text, holderId: Principal, signature: [Nat8], timestamp: Int)
+    const issueCredentialCommand = `dfx --identity store_upas canister call loyalty issueCredential '("${schemeId}", principal "${holderId}", ${formatArray(signature_credential)}, ${timestamp})'`;
+    
+    // Check ICRC1 balance
+    const checkHolderBalanceCommand = `dfx canister call icrc1_ledger_canister icrc1_balance_of '(record { owner = principal "${holderId}"; })'`;
 
     // Save commands to file
-    const commands = `${deserializeCommand}\n${verifyCommand}\n${verifyCredentialCommand}`;
+    const commands = `${deserializeCommand}\n${verifyCommand}\n${verifyCredentialCommand}\n${addStoreCommand}\n${getStoreCommand}\n${publishCredentialSchemeCommand}\n${mintAndTransferToStoreCommand}\n${issueCredentialCommand}\n${checkHolderBalanceCommand}`;
     fs.writeFileSync(path.join(__dirname, '../flow/temp_commands.sh'), commands);
 
     // Debug info
