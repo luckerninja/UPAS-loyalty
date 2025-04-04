@@ -17,8 +17,6 @@ import Debug "mo:base/Debug";
 import Signature "./libraries/Signature";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
-    private let IS_PRODUCTION = false;
-
     private let owner = msg.caller;
     private let tokenMinter = externalCanisterId;
     private stable let stores = BTree.init<Principal, Store.Store>(?8);
@@ -122,7 +120,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
 
     // Validate signature and timestamp
     private func validateCredential(store: Store.Store, credential: Credential.IssuedCredential, signature: [Nat8]) : Result.Result<(), ICRC1.TransferError> {
-        if (IS_PRODUCTION and not Credential.isValidTimestamp(credential.timestamp, Time.now())) {
+        if (not Credential.isValidTimestamp(credential.timestamp, Time.now())) {
             return #err(#GenericError({ message = "Invalid timestamp"; error_code = 0 }));
         };
 

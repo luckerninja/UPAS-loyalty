@@ -2,6 +2,11 @@ import Text "mo:base/Text";
 import Principal "mo:base/Principal";
 import Nat "mo:base/Nat";
 import Int "mo:base/Int";
+import Blob "mo:base/Blob";
+import Nat32 "mo:base/Nat32";
+import Sha256 "mo:sha2/Sha256";
+import Array "mo:base/Array";
+import Base16 "mo:base16/Base16";
 
 module {
     public type CredentialScheme = {
@@ -28,7 +33,13 @@ module {
     };
 
     public func generateSchemeId(storePrincipal: Principal, name: Text) : Text {
-        Text.concat(Principal.toText(storePrincipal), name)
+        let textBytes = Text.encodeUtf8(Principal.toText(storePrincipal) # name);
+        
+        let hashValue = Sha256.fromBlob(#sha256, textBytes);
+        
+        let hexValue = Base16.encode(hashValue);
+        
+        return hexValue;
     };
 
     public func isValidTimestamp(timestamp: Int, currentTime: Int) : Bool {

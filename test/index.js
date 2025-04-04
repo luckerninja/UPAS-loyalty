@@ -14,7 +14,16 @@ function generateKeysAndSignMessage() {
 
     // Create test data for credential
     const issuerId = process.env.STORE_PRINCIPAL || '';
-    const schemeId = `${issuerId}test_scheme`;
+    const schemeName = "test_scheme";
+    
+    // Generate schemeId the same way as in Motoko:
+    // 1. Create message bytes
+    const messageId = Buffer.from(issuerId + schemeName, 'utf8');
+    // 2. Get SHA-256 hash
+    const sha256Hash = crypto.createHash('sha256').update(messageId).digest();
+    // 3. Convert to hex string (like Base16.encode in Motoko)
+    const schemeId = sha256Hash.toString('hex');
+    
     const holderId = process.env.USER_PRINCIPAL || '';
     const timestamp = Date.now() * 1_000_000;
     const reward = parseInt(process.env.REWARD) || 100;
@@ -28,6 +37,7 @@ function generateKeysAndSignMessage() {
         reward.toString()
     ];
     console.log("Message parts:", message_parts);
+    console.log("Generated schemeId:", schemeId);
     
     const message_credential = Buffer.from(message_parts.join(' '));
     console.log("Raw message bytes:", Array.from(message_credential));
