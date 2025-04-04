@@ -2,6 +2,7 @@
 
 dfx identity use controller_upas
 
+# Create canisters to get their IDs
 dfx --identity controller_upas canister create loyalty
 dfx --identity controller_upas canister create ex
 
@@ -11,6 +12,8 @@ EX_CANISTER_ID=$(dfx canister id ex)
 
 LOYALTY_CANISTER_ID=$(dfx canister id loyalty)
 
+# Deploy ICRC1 ledger canister
+# Use the EX canister ID as the minting account
 dfx deploy icrc1_ledger_canister --argument "(variant { Init =
 record {
      token_symbol = \"3T\";
@@ -27,10 +30,14 @@ record {
  }
 })"
 
+# Deploy EX canister
+# Set the controller ID as the controller
 dfx deploy ex --argument "(principal \"${CONTROLLER_ID}\")"
 
 ICRC1_LEDGER_CANISTER_ID=$(dfx canister id icrc1_ledger_canister)
 
+# Deploy Loyalty canister
 dfx --identity controller_upas deploy loyalty --argument "(principal \"${EX_CANISTER_ID}\", principal \"${ICRC1_LEDGER_CANISTER_ID}\")"
 
+# Set the Loyalty canister ID in the EX canister
 dfx --identity controller_upas canister call ex setLoyaltyActor "(\"${LOYALTY_CANISTER_ID}\")"

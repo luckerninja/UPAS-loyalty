@@ -4,17 +4,20 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+// Read environment variables from .env file
+require('dotenv').config();
+
 function generateKeysAndSignMessage() {
     // Generate keys
     const keyPair = ec.genKeyPair();
     const publicKey = keyPair.getPublic('array', 'uncompressed');
 
     // Create test data for credential
-    const issuerId = "h45c6-kpdwh-ayjrp-hb4eg-f7wf6-kl4wb-6rwhr-widwg-nb6lc-6b2ad-vae";
+    const issuerId = process.env.STORE_PRINCIPAL || '';
     const schemeId = `${issuerId}test_scheme`;
-    const holderId = "aaaaa-aa";
+    const holderId = process.env.USER_PRINCIPAL || '';
     const timestamp = Date.now() * 1_000_000;
-    const reward = 100;
+    const reward = parseInt(process.env.REWARD) || 100;
 
     // Debug message construction
     const message_parts = [
@@ -70,7 +73,24 @@ function generateKeysAndSignMessage() {
     const checkHolderBalanceCommand = `dfx canister call icrc1_ledger_canister icrc1_balance_of '(record { owner = principal "${holderId}"; })'`;
 
     // Save commands to file
-    const commands = `${deserializeCommand}\n${verifyCommand}\n${verifyCredentialCommand}\n${addStoreCommand}\n${getStoreCommand}\n${publishCredentialSchemeCommand}\n${mintAndTransferToStoreCommand}\n${issueCredentialCommand}\n${checkHolderBalanceCommand}`;
+    const commands = `# test command for deserializePublicKey
+${deserializeCommand}
+# test command for verifySignature
+${verifyCommand}
+# test command for verifyCredential
+${verifyCredentialCommand}
+# Contoller adding store
+${addStoreCommand}
+# Getting store
+${getStoreCommand}
+# Store publishing credential scheme
+${publishCredentialSchemeCommand}
+# Controller minting and transferring points to store
+${mintAndTransferToStoreCommand}
+# Store issuing credential
+${issueCredentialCommand}
+# Checking ICRC1 balance
+${checkHolderBalanceCommand}`;
     fs.writeFileSync(path.join(__dirname, '../flow/temp_commands.sh'), commands);
 
     // Debug info
