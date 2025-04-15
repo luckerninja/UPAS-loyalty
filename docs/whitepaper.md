@@ -2,6 +2,10 @@
 
 ## Introduction
 
+UPAS (User Personal Achievement Standard) is an open-source protocol built on the Internet Computer Protocol (ICP) to redefine digital loyalty and reputation systems. By addressing the fragmentation, complexity, and privacy concerns of traditional loyalty programs, UPAS creates a universal standard for Web3. It empowers users to own their achievements, enables businesses to issue verifiable credentials, and fosters a decentralized ecosystem where reputation has tangible value. With a $200+ billion loyalty market ripe for disruption, UPAS positions ICP as the backbone for next-generation solutions.
+
+## Problem Statement & Market Opportunity
+
 The loyalty program market ($200+ billion by 2027, Statista) is on the verge of Web3 transformation. While major players like Pollen ($150M), Blackbird.xyz ($24M from a16z), and others are raising significant funding, no one offers open standards for digital loyalty and reputation.
 
 Traditional loyalty programs face critical challenges:
