@@ -12,6 +12,7 @@
   "dependencies": {
     "dotenv": "^16.4.7",
     "elliptic": "^6.6.1",
-    "libsodium-wrappers": "^0.7.15"
+    "libsodium-wrappers": "^0.7.15",
+    "ic-vetkd-utils": "file:lib/ic-vetkd-utils-0.1.0.tgz"
   }
 }

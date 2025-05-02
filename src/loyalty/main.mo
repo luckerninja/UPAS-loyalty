@@ -15,6 +15,10 @@ import Curve "mo:ecdsa/curve";
 import Blob "mo:base/Blob";
 import Debug "mo:base/Debug";
 import Signature "./libraries/Signature";
+import Receipt "./libraries/Receipt";
+import Map "mo:base/HashMap";
+import Buffer "mo:base/Buffer";
+import Hex "./libraries/Hex";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private let owner = msg.caller;
@@ -22,6 +26,26 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private stable let stores = BTree.init<Principal, Store.Store>(?8);
     private stable let userCredentials = BTree.init<Principal, [Credential.IssuedCredential]>(?8);
     private stable let storeTokens = BTree.init<Principal, Nat>(?8);
+    private stable let userReceipts = BTree.init<Principal, [Receipt.EncryptedReceipt]>(?8);
+    private stable var nextReceiptId : Nat = 1;
+
+    // vetKD system API interface
+    private type VETKD_SYSTEM_API = actor {
+        vetkd_public_key : ({
+            canister_id : ?Principal;
+            derivation_path : [Blob];
+            key_id : { curve : { #bls12_381_g2 }; name : Text };
+        }) -> async ({ public_key : Blob });
+        
+        vetkd_derive_encrypted_key : ({
+            derivation_path : [Blob];
+            derivation_id : Blob;
+            key_id : { curve : { #bls12_381_g2 }; name : Text };
+            encryption_public_key : Blob;
+        }) -> async ({ encrypted_key : Blob });
+    };
+
+    let vetkd_system_api : VETKD_SYSTEM_API = actor ("s55qq-oqaaa-aaaaa-aaakq-cai");
 
     public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text, publicKeyNat: [Nat8]) : async ?Store.Store {
         assert(caller == owner);
@@ -36,6 +60,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
             description = description;
             schemes = [];
             issueHistory = [];
+            receiptHistory = [];
             publicKey = publicKey;
         };
         
@@ -262,8 +287,6 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         caller == tokenMinter
     };
 
-
-
     // FOR TESTING
 
     public query func deserializePublicKey(publicKeyRawBytes: [Nat8]) : async ?ECDSA.PublicKey {
@@ -283,5 +306,80 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         let curve = Curve.Curve(#secp256k1);
         let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
         Signature.verifySignature(publicKey, Signature.credentialToMessage(credential), signature)
+    };
+
+    // Get verification key for receipt encryption
+    public shared ({ caller }) func receipt_symmetric_key_verification_key() : async Text {
+        let { public_key } = await vetkd_system_api.vetkd_public_key({
+            canister_id = null;
+            derivation_path = Array.make(Text.encodeUtf8("receipt_symmetric_key"));
+            key_id = { curve = #bls12_381_g2; name = "test_key_1" };
+        });
+        Hex.encode(Blob.toArray(public_key));
+    };
+
+    // Store encrypted receipt
+    public shared({ caller }) func storeReceipt(encryptedData: Text, holderId: Principal, amount: Nat) : async Receipt.ReceiptId {
+        let receipt : Receipt.EncryptedReceipt = {
+            id = nextReceiptId;
+            store = caller;
+            encryptedData = encryptedData;
+            timestamp = Time.now();
+        };
+
+        // Store receipt for the store
+        let storeReceipts = switch (BTree.get(userReceipts, Principal.compare, caller)) {
+            case (?receipts) receipts;
+            case null [];
+        };
+        ignore BTree.insert(
+            userReceipts,
+            Principal.compare,
+            caller,
+            Array.append(storeReceipts, [receipt])
+        );
+
+        // Update store receipt history
+        switch (BTree.get(stores, Principal.compare, caller)) {
+            case (?store) {
+                let history : Receipt.ReceiptHistory = {
+                    id = receipt.id;
+                    holderId = holderId;
+                    timestamp = receipt.timestamp;
+                    amount = amount;
+                };
+                
+                let updatedStore = {
+                    store with 
+                    receiptHistory = Array.append(store.receiptHistory, [history]);
+                };
+                ignore BTree.insert(stores, Principal.compare, caller, updatedStore);
+            };
+            case null { };
+        };
+
+        nextReceiptId += 1;
+        receipt.id
+    };
+
+    // Get receipt if authorized
+    public shared({ caller }) func getReceipt(receiptId: Receipt.ReceiptId) : async ?Receipt.EncryptedReceipt {
+        for ((user, receipts) in BTree.entries(userReceipts)) {
+            switch(Array.find<Receipt.EncryptedReceipt>(receipts, func(r) = r.id == receiptId)) {
+                case (?receipt) {
+                    if (Receipt.isAuthorized(receipt, caller, receipt.store)) {
+                        return ?receipt;
+                    };
+                    return null; // Unauthorized
+                };
+                case null {};
+            };
+        };
+        null // Not found
+    };
+
+    // Get user receipts
+    public shared({ caller }) func getUserReceipts() : async ?[Receipt.EncryptedReceipt] {
+        BTree.get(userReceipts, Principal.compare, caller)
     };
 }

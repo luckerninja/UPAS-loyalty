@@ -12,6 +12,10 @@ EX_CANISTER_ID=$(dfx canister id ex)
 
 LOYALTY_CANISTER_ID=$(dfx canister id loyalty)
 
+dfx canister create vetkd_system_api --specified-id s55qq-oqaaa-aaaaa-aaakq-cai
+
+dfx deploy vetkd_system_api
+
 # Deploy ICRC1 ledger canister
 # Use the EX canister ID as the minting account
 dfx deploy icrc1_ledger_canister --argument "(variant { Init =
