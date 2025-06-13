@@ -19,14 +19,33 @@ import Receipt "./libraries/Receipt";
 import Map "mo:base/HashMap";
 import Buffer "mo:base/Buffer";
 import Hex "./libraries/Hex";
+import VetKey "mo:ic-vetkeys";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
+
+    let RECEIPTS_MAP_NAME = "receipts";
+    
     private let owner = msg.caller;
     private let tokenMinter = externalCanisterId;
     private stable let stores = BTree.init<Principal, Store.Store>(?8);
     private stable let userCredentials = BTree.init<Principal, [Credential.IssuedCredential]>(?8);
     private stable let storeTokens = BTree.init<Principal, Nat>(?8);
     private stable let userReceipts = BTree.init<Principal, [Receipt.EncryptedReceipt]>(?8);
+
+
+    type EncryptedMaps = VetKey.EncryptedMaps.EncryptedMaps<VetKey.AccessRights>;
+    let accessRightsOperations = VetKey.accessRightsOperations();
+    func newEncryptedMaps() : EncryptedMaps {
+        VetKey.EncryptedMaps.EncryptedMaps<VetKey.AccessRights>(
+            { curve = #bls12_381_g2; name = "dfx_test_key" },
+            "receipts",
+            accessRightsOperations
+        );
+    };
+
+    let encryptedMaps = newEncryptedMaps();
+
+
     private stable var nextReceiptId : Nat = 1;
 
     // vetKD system API interface
@@ -308,24 +327,33 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         Signature.verifySignature(publicKey, Signature.credentialToMessage(credential), signature)
     };
 
-    // Get verification key for receipt encryption
-    public shared ({ caller }) func receipt_symmetric_key_verification_key() : async Text {
-        let { public_key } = await vetkd_system_api.vetkd_public_key({
-            canister_id = null;
-            derivation_path = Array.make(Text.encodeUtf8("receipt_symmetric_key"));
-            key_id = { curve = #bls12_381_g2; name = "test_key_1" };
-        });
-        Hex.encode(Blob.toArray(public_key));
-    };
-
     // Store encrypted receipt
     public shared({ caller }) func storeReceipt(encryptedData: Text, holderId: Principal, amount: Nat) : async Receipt.ReceiptId {
         let receipt : Receipt.EncryptedReceipt = {
             id = nextReceiptId;
             store = caller;
-            encryptedData = encryptedData;
             timestamp = Time.now();
         };
+
+        // Store encrypted data in EncryptedMaps using receipt ID
+        let mapId = (caller, Text.encodeUtf8("receipts"));
+        let key = Text.encodeUtf8(Nat.toText(receipt.id));
+        let value = Text.encodeUtf8(encryptedData);
+        
+        ignore encryptedMaps.insertEncryptedValue(
+            caller,
+            mapId,
+            key,
+            value
+        );
+
+        // Set read-only rights for the holder
+        ignore encryptedMaps.setUserRights(
+            caller,
+            mapId,
+            holderId,
+            #ReadWriteManage
+        );
 
         // Store receipt for the store
         let storeReceipts = switch (BTree.get(userReceipts, Principal.compare, caller)) {
@@ -346,7 +374,6 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
                     id = receipt.id;
                     holderId = holderId;
                     timestamp = receipt.timestamp;
-                    amount = amount;
                 };
                 
                 let updatedStore = {
@@ -362,13 +389,25 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         receipt.id
     };
 
-    // Get receipt if authorized
-    public shared({ caller }) func getReceipt(receiptId: Receipt.ReceiptId) : async ?Receipt.EncryptedReceipt {
+    // Get encrypted receipt data
+    public shared({ caller }) func getEncryptedReceiptData(receiptId: Receipt.ReceiptId) : async ?Text {
+        // Find receipt to check authorization
         for ((user, receipts) in BTree.entries(userReceipts)) {
             switch(Array.find<Receipt.EncryptedReceipt>(receipts, func(r) = r.id == receiptId)) {
                 case (?receipt) {
                     if (Receipt.isAuthorized(receipt, caller, receipt.store)) {
-                        return ?receipt;
+                        let mapId = (receipt.store, Text.encodeUtf8("receipts"));
+                        let key = Text.encodeUtf8(Nat.toText(receiptId));
+                        switch(encryptedMaps.getEncryptedValue(caller, mapId, key)) {
+                            case (#ok(?value)) {
+                                let decoded = Text.decodeUtf8(value);
+                                switch(decoded) {
+                                    case (?text) return ?text;
+                                    case null return null;
+                                }
+                            };
+                            case _ return null;
+                        }
                     };
                     return null; // Unauthorized
                 };

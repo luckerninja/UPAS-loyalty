@@ -6,7 +6,6 @@ module {
     public type EncryptedReceipt = {
         id: ReceiptId;
         store: StorePrincipal;
-        encryptedData: Text;
         timestamp: Int;
     };
 
