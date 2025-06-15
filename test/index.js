@@ -82,6 +82,13 @@ function generateKeysAndSignMessage() {
     // Check ICRC1 balance
     const checkHolderBalanceCommand = `dfx canister call icrc1_ledger_canister icrc1_balance_of '(record { owner = principal "${holderId}"; })'`;
 
+    // Test encrypted receipts functionality
+    // public shared({ caller }) func storeReceipt(encryptedData: Text, holderId: Principal, amount: Nat) : async Receipt.ReceiptId
+    const storeReceiptCommand = `dfx --identity store_upas canister call loyalty storeReceipt '("encrypted_test_data", principal "${holderId}", 100)'`;
+    
+    // public shared({ caller }) func getEncryptedReceiptData(receiptId: Receipt.ReceiptId) : async ?Text
+    const getEncryptedReceiptDataCommand = `dfx --identity user_upas canister call loyalty getEncryptedReceiptData '(1)'`;
+
     // Save commands to file
     const commands = `# test command for deserializePublicKey
 ${deserializeCommand}
@@ -100,7 +107,11 @@ ${mintAndTransferToStoreCommand}
 # Store issuing credential
 ${issueCredentialCommand}
 # Checking ICRC1 balance
-${checkHolderBalanceCommand}`;
+${checkHolderBalanceCommand}
+# Store creating encrypted receipt
+${storeReceiptCommand}
+# User getting encrypted receipt data
+${getEncryptedReceiptDataCommand}`;
     fs.writeFileSync(path.join(__dirname, '../flow/temp_commands.sh'), commands);
 
     // Debug info

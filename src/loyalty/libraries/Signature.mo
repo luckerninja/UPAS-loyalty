@@ -11,9 +11,12 @@ import Debug "mo:base/Debug";
 module {
     public func verifySignature(publicKey: ECDSA.PublicKey, message: [Nat8], signatureRawBytes: [Nat8]) : Bool {
         let curve = Curve.Curve(#secp256k1);
-        let ?signature = ECDSA.deserializeSignatureRaw(Blob.fromArray(signatureRawBytes));
-
-        return ECDSA.verify(curve, publicKey, Blob.fromArray(message).vals(), signature);
+        switch(ECDSA.deserializeSignatureRaw(Blob.fromArray(signatureRawBytes))) {
+            case (?signature) {
+                ECDSA.verify(curve, publicKey, Blob.fromArray(message).vals(), signature)
+            };
+            case null false;
+        }
     };
 
     public func credentialToMessage(credential: Credential.IssuedCredential) : [Nat8] {

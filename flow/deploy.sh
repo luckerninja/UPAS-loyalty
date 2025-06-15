@@ -12,10 +12,6 @@ EX_CANISTER_ID=$(dfx canister id ex)
 
 LOYALTY_CANISTER_ID=$(dfx canister id loyalty)
 
-dfx canister create vetkd_system_api --specified-id s55qq-oqaaa-aaaaa-aaakq-cai
-
-dfx deploy vetkd_system_api
-
 # Deploy ICRC1 ledger canister
 # Use the EX canister ID as the minting account
 dfx deploy icrc1_ledger_canister --argument "(variant { Init =
@@ -41,7 +37,7 @@ dfx deploy ex --argument "(principal \"${CONTROLLER_ID}\")"
 ICRC1_LEDGER_CANISTER_ID=$(dfx canister id icrc1_ledger_canister)
 
 # Deploy Loyalty canister
-dfx --identity controller_upas deploy loyalty --argument "(principal \"${EX_CANISTER_ID}\", principal \"${ICRC1_LEDGER_CANISTER_ID}\")"
+dfx --identity controller_upas deploy loyalty --argument "(principal \"${EX_CANISTER_ID}\")"
 
 # Set the Loyalty canister ID in the EX canister
 dfx --identity controller_upas canister call ex setLoyaltyActor "(\"${LOYALTY_CANISTER_ID}\")"

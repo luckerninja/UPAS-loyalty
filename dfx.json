@@ -1,14 +1,6 @@
 {
   "canisters": {
-    "vetkd_system_api": {
-      "candid": "vetkd_system_api.did",
-      "type": "custom",
-      "wasm": "vetkd_system_api.wasm"
-    },
     "loyalty": {
-      "dependencies": [
-        "vetkd_system_api"
-      ],
       "main": "src/loyalty/main.mo",
       "type": "motoko"
     },
