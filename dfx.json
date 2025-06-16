@@ -14,6 +14,15 @@
       "wasm": "https://github.com/dfinity/ic/releases/download/ledger-suite-icrc-2024-10-17/ic-icrc1-ledger.wasm.gz"
     }
   },
+  "networks": {
+    "local": {
+      "bind": "127.0.0.1:8080",
+      "type": "ephemeral",
+      "replica": {
+        "subnet_type": "system"
+      }
+    }
+  },
   "defaults": {
     "build": {
       "packtool": "mops sources"

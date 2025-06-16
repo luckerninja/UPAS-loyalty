@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "lib": ["es2020"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "types": ["jest", "node"]
+  },
+  "include": [
+    "./src/**/*.ts",
+    "./global-setup.ts",
+    "./global-teardown.ts",
+    "./types.d.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,18 +1,24 @@
 {
-  "name": "test",
+  "name": "loyalty-tests",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Tests for Loyalty System",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js"
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
   },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "dotenv": "^16.4.7",
-    "elliptic": "^6.6.1",
-    "libsodium-wrappers": "^0.7.15",
-    "ic-vetkd-utils": "file:lib/ic-vetkd-utils-0.1.0.tgz"
+  "devDependencies": {
+    "@dfinity/pic": "^0.13.1",
+    "@jest/globals": "^30.0.0",
+    "@types/elliptic": "^6.4.14",
+    "@types/jest": "^29.5.14",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.0",
+    "dotenv": "^16.4.1",
+    "elliptic": "^6.5.4",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
   }
 }
