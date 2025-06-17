@@ -10,7 +10,7 @@ require('dotenv').config();
 function generateKeysAndSignMessage() {
     // Generate keys
     const keyPair = ec.genKeyPair();
-    const publicKey = keyPair.getPublic('array', 'uncompressed');
+    const publicKey = keyPair.getPublic(false, 'array');
 
     // Create test data for credential
     const issuerId = process.env.STORE_PRINCIPAL || '';

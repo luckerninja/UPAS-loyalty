@@ -20,6 +20,7 @@ import Map "mo:base/HashMap";
 import Buffer "mo:base/Buffer";
 import Hex "./libraries/Hex";
 import VetKey "mo:ic-vetkeys";
+import Int "mo:base/Int";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
 
@@ -321,6 +322,12 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     };
 
     public shared({ caller }) func verifyCredential(schemeId: Text, holderId: Principal, timestamp: Int, signature: [Nat8], publicKeyRawBytes: [Nat8]) : async Bool {
+        Debug.print("verifyCredential called by: " # Principal.toText(caller));
+        Debug.print("schemeId: " # schemeId);
+        Debug.print("holderId: " # Principal.toText(holderId));
+        Debug.print("timestamp: " # Int.toText(timestamp));
+        Debug.print("signature length: " # Nat.toText(signature.size()));
+        Debug.print("publicKey length: " # Nat.toText(publicKeyRawBytes.size()));
         let credential = Credential.buildCredential(schemeId, caller, holderId, timestamp, 100);
         let curve = Curve.Curve(#secp256k1);
         let ?publicKey = ECDSA.deserializePublicKeyUncompressed(curve, Blob.fromArray(publicKeyRawBytes));
