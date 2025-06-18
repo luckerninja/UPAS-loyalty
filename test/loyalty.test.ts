@@ -49,6 +49,52 @@ if (!PIC_URL) {
   throw new Error('PIC_URL is not defined in .env file');
 }
 
+// Utility function to create credential signature
+async function createCredentialSignature(
+  schemeId: string,
+  issuerId: Principal,
+  holderId: Principal,
+  timestamp: bigint,
+  reward: number,
+  keyPair: any
+): Promise<{
+  signature: number[],
+  publicKey: number[],
+  messageHash: Buffer
+}> {
+  // Create message parts
+  const messageParts = [
+    schemeId,
+    issuerId.toString(),
+    holderId.toString(),
+    timestamp.toString(),
+    BigInt(reward).toString()
+  ];
+
+  // Create message and hash it
+  const messageCredential = new TextEncoder().encode(messageParts.join(' '));
+  console.log('Message parts:', messageParts);
+  console.log('Message:', Array.from(messageCredential));
+  const messageHashCredential = crypto.createHash('sha256').update(messageCredential).digest();
+  console.log('Message hash:', messageHashCredential.toString('hex'));
+
+  // Sign the credential hash
+  const signatureObjCredential = keyPair.sign(messageHashCredential, { canonical: true });
+  const rCredential = signatureObjCredential.r.toArray('be', 32);
+  const sCredential = signatureObjCredential.s.toArray('be', 32);
+  const signatureCredential = [...rCredential, ...sCredential];
+  console.log('Signature:', Buffer.from(signatureCredential).toString('hex'));
+
+  // Get public key
+  const publicKey = keyPair.getPublic(false, 'array');
+
+  return {
+    signature: signatureCredential,
+    publicKey,
+    messageHash: messageHashCredential
+  };
+}
+
 describe('Loyalty System', () => {
   let pic: PocketIc;
   let loyaltyActor: Actor<_SERVICE>;
@@ -56,13 +102,13 @@ describe('Loyalty System', () => {
   let storeIdentity: ReturnType<typeof createIdentity>;
   let userIdentity: ReturnType<typeof createIdentity>;
   let controllerIdentity: ReturnType<typeof createIdentity>;
+  let exActor: Actor<EX_SERVICE>;
 
   beforeEach(async () => {
     pic = await PocketIc.create(PIC_URL, {
       nns: { state: { type: SubnetStateType.New } },
       application: [
         { state: { type: SubnetStateType.New } },
-        { state: { type: SubnetStateType.New } }
       ]
     });
 
@@ -73,19 +119,19 @@ describe('Loyalty System', () => {
 
     const applicationSubnets = await pic.getApplicationSubnets();
     const mainSubnet = applicationSubnets[0];
-    const icrcSubnet = applicationSubnets[1];
 
-    // Create canisters
     const exCanisterId = await pic.createCanister({
       targetSubnetId: mainSubnet.id
     });
     const loyaltyCanisterId = await pic.createCanister({
+      targetSubnetId: mainSubnet.id,
+      sender: controllerIdentity.getPrincipal()
+    });
+    const icrcCanisterId = await pic.createCanister({
       targetSubnetId: mainSubnet.id
     });
-    // Deploy ICRC1 ledger with proper initialization
-    const icrcCanisterId = await pic.createCanister({
-      targetSubnetId: icrcSubnet.id
-    });
+
+    // Then install code in each canister
     const arg = IDL.encode(
       [IDL.Variant({
         Init: IDL.Record({
@@ -128,13 +174,22 @@ describe('Loyalty System', () => {
         },
       ]
     );
-    
+
+    // Debug logs for canister IDs
+    // console.log('ICRC Canister ID:', icrcCanisterId.toString());
+    // console.log('EX Canister ID:', exCanisterId.toString());
+    // console.log('Loyalty Canister ID:', loyaltyCanisterId.toString());
+
     await pic.installCode({
       wasm: ICRC_WASM_PATH,
       canisterId: icrcCanisterId,
-      targetSubnetId: icrcSubnet.id,
+      targetSubnetId: mainSubnet.id,
       arg: arg,
     });
+
+    // Create ICRC1 actor
+    icrcActor = pic.createActor<ICRC_SERVICE>(icrcIdlFactory, icrcCanisterId);
+    icrcActor.setIdentity(controllerIdentity);
 
     // Deploy EX canister
     const exArg = IDL.encode(
@@ -145,7 +200,7 @@ describe('Loyalty System', () => {
       wasm: EX_WASM_PATH,
       canisterId: exCanisterId,
       targetSubnetId: mainSubnet.id,
-      arg: exArg
+      arg: exArg,
     });
 
     // Deploy Loyalty canister
@@ -153,21 +208,37 @@ describe('Loyalty System', () => {
       [IDL.Principal],
       [exCanisterId]
     );
-    const loyaltyFixture = await pic.setupCanister<_SERVICE>({
-      idlFactory,
+    await pic.installCode({
       wasm: LOYALTY_WASM_PATH,
+      canisterId: loyaltyCanisterId,
       targetSubnetId: mainSubnet.id,
       arg: loyaltyArg,
       sender: controllerIdentity.getPrincipal()
     });
-    loyaltyActor = loyaltyFixture.actor;
 
-    // Set controller identity for loyalty actor
+    // Create loyalty actor
+    loyaltyActor = pic.createActor<_SERVICE>(idlFactory, loyaltyCanisterId);
     loyaltyActor.setIdentity(controllerIdentity);
 
+    // Set ICRC1 actor in Loyalty canister
+    loyaltyActor.setIdentity(controllerIdentity);
+    await loyaltyActor.setICRC1Actor(icrcCanisterId);
+
     // Set Loyalty canister ID in EX canister
-    const exActor = pic.createActor<EX_SERVICE>(exIdlFactory, exCanisterId);
-    await exActor.setLoyaltyActor(loyaltyCanisterId.toString());
+    exActor = pic.createActor<EX_SERVICE>(exIdlFactory, exCanisterId);
+    await exActor.setController(controllerIdentity.getPrincipal());
+    exActor.setIdentity(controllerIdentity);
+    await exActor.setLoyaltyActor(loyaltyCanisterId);
+    await exActor.setICRC1Actor(icrcCanisterId);
+    
+    // Verify Loyalty actor setup
+    const loyaltyActorId = await exActor.getLoyaltyActor();
+    // console.log('Loyalty actor ID from EX canister:', loyaltyActorId);
+
+    // Debug log for ICRC1 actor setup
+    // console.log('ICRC1 actor set in EX canister:', icrcCanisterId.toString());
+
+    await pic.setTime(Date.now()); 
   });
 
   afterEach(async () => {
@@ -179,11 +250,10 @@ describe('Loyalty System', () => {
       // Generate keys
       const ec = new EC('secp256k1');
       const keyPair = ec.genKeyPair();
-      const publicKey = keyPair.getPublic(false, 'array');
 
       // Add store
       loyaltyActor.setIdentity(controllerIdentity);
-      await loyaltyActor.addStore(storeIdentity.getPrincipal(), "Store Name", "Store Description", publicKey);
+      await loyaltyActor.addStore(storeIdentity.getPrincipal(), "Store Name", "Store Description", keyPair.getPublic(false, 'array'));
       
       // Create and verify credential
       const schemeName = "test_scheme";
@@ -199,31 +269,15 @@ describe('Loyalty System', () => {
       const timestamp = BigInt(Date.now()) * 1_000_000n;
       const reward = 100;
 
-      // Debug message construction
-      const messageParts = [
+      // Create credential signature
+      const { signature, publicKey, messageHash } = await createCredentialSignature(
         schemeId,
-        storeIdentity.getPrincipal().toString(),
-        userIdentity.getPrincipal().toString(),
-        timestamp.toString(),
-        reward.toString()
-      ];
-      console.log("Message parts:", messageParts);
-      
-      const messageCredential = Buffer.from(messageParts.join(' '));
-      console.log("Message credential:", messageCredential.toString());
-      console.log("Message credential bytes:", Array.from(messageCredential));
-
-      // Create credential message and hash it
-      const messageHashCredential = crypto.createHash('sha256').update(messageCredential).digest();
-      console.log("Message hash:", messageHashCredential.toString('hex'));
-
-      // Sign the credential hash
-      const signatureObjCredential = keyPair.sign(messageHashCredential, { canonical: true });
-      const rCredential = signatureObjCredential.r.toArray('be', 32);
-      const sCredential = signatureObjCredential.s.toArray('be', 32);
-      const signatureCredential = [...rCredential, ...sCredential];
-      console.log("Signature (hex):", Buffer.from(signatureCredential).toString('hex'));
-      console.log("Signature bytes:", signatureCredential);
+        storeIdentity.getPrincipal(),
+        userIdentity.getPrincipal(),
+        timestamp,
+        reward,
+        keyPair
+      );
 
       // Set store identity for verification
       loyaltyActor.setIdentity(storeIdentity);
@@ -233,7 +287,7 @@ describe('Loyalty System', () => {
         schemeId,
         userIdentity.getPrincipal(),
         timestamp,
-        signatureCredential,
+        signature,
         publicKey
       );
       
@@ -255,6 +309,84 @@ describe('Loyalty System', () => {
       const receiptData = await loyaltyActor.getEncryptedReceiptData(receiptId);
       
       expect(receiptData).toBe(encryptedData);
+    });
+  });
+
+  describe('credential operations', () => {
+    it('should verify credential signature', async () => {
+      // ... existing test code ...
+    });
+
+    it('should complete full credential lifecycle', async () => {
+      // Generate keys for store
+      const ec = new EC('secp256k1');
+      const keyPair = ec.genKeyPair();
+
+      // Add store
+      loyaltyActor.setIdentity(controllerIdentity);
+      await loyaltyActor.addStore(storeIdentity.getPrincipal(), "Store Name", "Store Description", keyPair.getPublic(false, 'array'));
+
+      // Create credential scheme
+      loyaltyActor.setIdentity(storeIdentity);
+      const schemeName = "test_scheme";
+      const schemeId = await loyaltyActor.publishCredentialScheme(
+        schemeName,
+        "Test Description",
+        "Test Metadata",
+        100n
+      );
+
+      // Add tokens to store through ex canister
+      exActor.setIdentity(controllerIdentity);
+      const mintResult = await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
+      expect(mintResult).toHaveProperty('Ok');
+      expect(mintResult.Ok).toBe(2n);
+
+      // Create credential signature
+      const timestamp = BigInt(Date.now()) * 1_000_000n;
+      const reward = 100;
+      const { signature, publicKey } = await createCredentialSignature(
+        schemeId,
+        storeIdentity.getPrincipal(),
+        userIdentity.getPrincipal(),
+        timestamp,
+        reward,
+        keyPair
+      );
+
+      // Issue credential
+      loyaltyActor.setIdentity(storeIdentity);
+      const issueResult = await loyaltyActor.issueCredential(
+        schemeId,
+        userIdentity.getPrincipal(),
+        signature,
+        timestamp
+      );
+
+      // Check that credential was issued successfully
+      expect(issueResult.ok).toBe(3n);
+
+      // Get user credentials
+      loyaltyActor.setIdentity(userIdentity);
+      const userCredentials = await loyaltyActor.getUserCredentials(userIdentity.getPrincipal());
+      // console.log('User credentials:', userCredentials);
+      
+      // Verify user has the credential
+      expect(userCredentials.length).toBe(1);
+      expect(userCredentials[0].length).toBe(1);
+      expect(userCredentials[0][0].reward).toBe(100n);
+      expect(userCredentials[0][0].schemeId).toBe(schemeId);
+
+      // Get store history
+      loyaltyActor.setIdentity(storeIdentity);
+      const storeHistory = await loyaltyActor.getStoreHistory(storeIdentity.getPrincipal());
+      // console.log('Store history:', storeHistory);
+      
+      // Verify store history
+      expect(storeHistory.length).toBe(1);
+      expect(storeHistory[0].length).toBe(1);
+      expect(storeHistory[0][0].reward).toBe(100n);
+      expect(storeHistory[0][0].schemeId).toBe(schemeId);
     });
   });
 }); 

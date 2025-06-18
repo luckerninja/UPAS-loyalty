@@ -7,6 +7,7 @@ import Nat32 "mo:base/Nat32";
 import Sha256 "mo:sha2/Sha256";
 import Array "mo:base/Array";
 import Base16 "mo:base16/Base16";
+import Debug "mo:base/Debug";
 
 module {
     public type CredentialScheme = {
@@ -43,6 +44,7 @@ module {
     };
 
     public func isValidTimestamp(timestamp: Int, currentTime: Int) : Bool {
+        Debug.print("isValidTimestamp: " # debug_show(timestamp) # " " # debug_show(currentTime));
         let oneDay = 24 * 60 * 60 * 1000_000_000;
         let diff = currentTime - timestamp;
         diff >= -oneDay and diff <= oneDay

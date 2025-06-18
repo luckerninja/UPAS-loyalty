@@ -44,28 +44,23 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         );
     };
 
+    private var ICRC1Actor = actor("aaaaa-aa") : actor {
+        icrc1_transfer : shared (ICRC1.TransferArg) -> async ICRC1.TransferResult;
+    };
+
+    public shared({ caller }) func setICRC1Actor(icrc1Address: Principal): async () {
+        assert owner == caller;
+        Debug.print("Setting ICRC1 actor with Principal: " # debug_show(icrc1Address));
+        ICRC1Actor := actor(Principal.toText(icrc1Address)) : actor {
+            icrc1_transfer : shared (ICRC1.TransferArg) -> async ICRC1.TransferResult;
+        };
+        Debug.print("ICRC1 actor Principal: " # debug_show(Principal.fromActor(ICRC1Actor)));
+    };
+
     let encryptedMaps = newEncryptedMaps();
 
 
     private stable var nextReceiptId : Nat = 1;
-
-    // vetKD system API interface
-    private type VETKD_SYSTEM_API = actor {
-        vetkd_public_key : ({
-            canister_id : ?Principal;
-            derivation_path : [Blob];
-            key_id : { curve : { #bls12_381_g2 }; name : Text };
-        }) -> async ({ public_key : Blob });
-        
-        vetkd_derive_encrypted_key : ({
-            derivation_path : [Blob];
-            derivation_id : Blob;
-            key_id : { curve : { #bls12_381_g2 }; name : Text };
-            encryption_public_key : Blob;
-        }) -> async ({ encrypted_key : Blob });
-    };
-
-    let vetkd_system_api : VETKD_SYSTEM_API = actor ("s55qq-oqaaa-aaaaa-aaakq-cai");
 
     public shared({ caller }) func addStore(principal: Principal, name: Text, description: Text, publicKeyNat: [Nat8]) : async ?Store.Store {
         assert(caller == owner);
@@ -188,7 +183,7 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         };
 
         try {
-            let result = await ICRC1.icrc1_transfer(transferArgs);
+            let result = await ICRC1Actor.icrc1_transfer(transferArgs);
             switch(result) {
                 case (#Ok(blockIndex)) #ok(blockIndex);
                 case (#Err(err)) #err(err);
