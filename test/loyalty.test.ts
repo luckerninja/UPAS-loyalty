@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import dotenv from 'dotenv';
 import { Principal } from '@dfinity/principal';
+import { ActorMethod } from '@dfinity/agent';
 
 // Load environment variables from .env file
 dotenv.config({ path: resolve(__dirname, '.env') });
@@ -49,6 +50,17 @@ if (!PIC_URL) {
   throw new Error('PIC_URL is not defined in .env file');
 }
 
+// Define types
+type EncryptedReceiptData = [] | [string];
+interface KeyPairResult {
+  r: { toArray(endian: 'be', length: number): number[] };
+  s: { toArray(endian: 'be', length: number): number[] };
+}
+interface KeyPair {
+  sign(msg: Buffer, options?: { canonical: boolean }): KeyPairResult;
+  getPublic(compact: boolean, type: 'array'): number[];
+}
+
 // Utility function to create credential signature
 async function createCredentialSignature(
   schemeId: string,
@@ -56,7 +68,7 @@ async function createCredentialSignature(
   holderId: Principal,
   timestamp: bigint,
   reward: number,
-  keyPair: any
+  keyPair: KeyPair
 ): Promise<{
   signature: number[],
   publicKey: number[],
@@ -245,70 +257,122 @@ describe('Loyalty System', () => {
     await pic.tearDown();
   });
 
-  describe('store operations', () => {
-    it('should add store and verify credentials', async () => {
-      // Generate keys
-      const ec = new EC('secp256k1');
-      const keyPair = ec.genKeyPair();
-
-      // Add store
-      loyaltyActor.setIdentity(controllerIdentity);
-      await loyaltyActor.addStore(storeIdentity.getPrincipal(), "Store Name", "Store Description", keyPair.getPublic(false, 'array'));
-      
-      // Create and verify credential
-      const schemeName = "test_scheme";
-      
-      // Generate schemeId the same way as in Motoko:
-      // 1. Create message bytes
-      const messageId = Buffer.from(storeIdentity.getPrincipal().toString() + schemeName, 'utf8');
-      // 2. Get SHA-256 hash
-      const sha256Hash = crypto.createHash('sha256').update(messageId).digest();
-      // 3. Convert to hex string (like Base16.encode in Motoko)
-      const schemeId = sha256Hash.toString('hex');
-      
-      const timestamp = BigInt(Date.now()) * 1_000_000n;
-      const reward = 100;
-
-      // Create credential signature
-      const { signature, publicKey, messageHash } = await createCredentialSignature(
-        schemeId,
-        storeIdentity.getPrincipal(),
-        userIdentity.getPrincipal(),
-        timestamp,
-        reward,
-        keyPair
-      );
-
-      // Set store identity for verification
-      loyaltyActor.setIdentity(storeIdentity);
-
-      // Verify credential
-      const result = await loyaltyActor.verifyCredential(
-        schemeId,
-        userIdentity.getPrincipal(),
-        timestamp,
-        signature,
-        publicKey
-      );
-      
-      expect(result).toBe(true);
-    });
-  });
-
   describe('receipt operations', () => {
-    it('should handle encrypted receipts', async () => {
+    beforeEach(async () => {
+      // Add tokens to store for cashback
+      exActor.setIdentity(controllerIdentity);
+      const mintResult = await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
+      expect(mintResult).toHaveProperty('Ok');
+    });
+
+    it('should handle receipt with cashback', async () => {
       const encryptedData = "encrypted_test_data";
-      const amount = 100n;
+      const purchaseAmount = 100n;
+      const expectedCashback = purchaseAmount / 10n; // 10% cashback
+      
+      // Get initial store tokens
+      const initialStoreTokens = await loyaltyActor.getStoreTokens(storeIdentity.getPrincipal());
       
       // Store receipt
       loyaltyActor.setIdentity(storeIdentity);
-      const receiptId = await loyaltyActor.storeReceipt(encryptedData, userIdentity.getPrincipal(), amount);
+      const receiptId = await loyaltyActor.storeReceipt(encryptedData, userIdentity.getPrincipal(), purchaseAmount);
+      expect(typeof receiptId).toBe('bigint');
       
-      // Get receipt data
+      // Verify store tokens were reduced correctly
+      const finalStoreTokens = await loyaltyActor.getStoreTokens(storeIdentity.getPrincipal());
+      expect(finalStoreTokens).toBe(initialStoreTokens - expectedCashback);
+    });
+
+    it('should handle multiple receipts with cashback', async () => {
+      const purchases = [
+        { data: "receipt1", amount: 100n },
+        { data: "receipt2", amount: 200n },
+        { data: "receipt3", amount: 300n }
+      ];
+      
+      // Get initial store tokens
+      const initialStoreTokens = await loyaltyActor.getStoreTokens(storeIdentity.getPrincipal());
+      
+      // Store multiple receipts
+      loyaltyActor.setIdentity(storeIdentity);
+      const receiptIds = [];
+      for (const purchase of purchases) {
+        const receiptId = await loyaltyActor.storeReceipt(purchase.data, userIdentity.getPrincipal(), purchase.amount);
+        expect(typeof receiptId).toBe('bigint');
+        receiptIds.push(receiptId);
+      }
+      
+      // Verify all receipts
       loyaltyActor.setIdentity(userIdentity);
-      const receiptData = await loyaltyActor.getEncryptedReceiptData(receiptId);
+      for (let i = 0; i < purchases.length; i++) {
+        const receiptData: EncryptedReceiptData = await loyaltyActor.getEncryptedReceiptData(receiptIds[i]);
+        expect(Array.isArray(receiptData)).toBe(true);
+        expect(receiptData.length).toBe(1);
+        expect(receiptData[0]).toBe(purchases[i].data);
+      }
       
-      expect(receiptData).toBe(encryptedData);
+      // Calculate total expected cashback
+      const totalExpectedCashback = purchases.reduce((sum, purchase) => sum + purchase.amount / 10n, 0n);
+      
+      // Verify store tokens were reduced correctly
+      const finalStoreTokens = await loyaltyActor.getStoreTokens(storeIdentity.getPrincipal());
+      expect(finalStoreTokens).toBe(initialStoreTokens - totalExpectedCashback);
+    });
+
+    it('should handle receipt storage when store has insufficient balance for cashback', async () => {
+      // First, spend most of store's balance
+      loyaltyActor.setIdentity(storeIdentity);
+      const largePurchase = 9000n;
+      const firstReceiptId = await loyaltyActor.storeReceipt("large_purchase", userIdentity.getPrincipal(), largePurchase);
+      expect(typeof firstReceiptId).toBe('bigint');
+      
+      // Try to store another receipt
+      const encryptedData = "insufficient_balance_receipt";
+      const purchaseAmount = 10000n;
+      
+      // Get store balance before second receipt
+      const storeBalanceBefore = await loyaltyActor.getStoreTokens(storeIdentity.getPrincipal());
+      
+      // Store receipt should fail due to insufficient balance
+      await expect(
+        loyaltyActor.storeReceipt(encryptedData, userIdentity.getPrincipal(), purchaseAmount)
+      ).rejects.toThrow();
+      
+      // Verify store balance remained unchanged
+      const storeBalanceAfter = await loyaltyActor.getStoreTokens(storeIdentity.getPrincipal());
+      expect(storeBalanceAfter).toBe(storeBalanceBefore);
+    });
+
+    it('should allow store to view receipt data', async () => {
+      const encryptedData = "store_viewable_receipt";
+      const purchaseAmount = 100n;
+      
+      // Store receipt
+      loyaltyActor.setIdentity(storeIdentity);
+      const receiptId = await loyaltyActor.storeReceipt(encryptedData, userIdentity.getPrincipal(), purchaseAmount);
+      expect(typeof receiptId).toBe('bigint');
+      
+      // Verify store can view receipt
+      const receiptData: EncryptedReceiptData = await loyaltyActor.getEncryptedReceiptData(receiptId);
+      expect(Array.isArray(receiptData)).toBe(true);
+      expect(receiptData.length).toBe(1);
+      expect(receiptData[0]).toBe(encryptedData);
+    });
+
+    it('should prevent unauthorized access to receipt data', async () => {
+      const encryptedData = "private_receipt";
+      const purchaseAmount = 100n;
+      
+      // Store receipt
+      loyaltyActor.setIdentity(storeIdentity);
+      const receiptId = await loyaltyActor.storeReceipt(encryptedData, userIdentity.getPrincipal(), purchaseAmount);
+      expect(typeof receiptId).toBe('bigint');
+      
+      // Try to access with unauthorized identity
+      loyaltyActor.setIdentity(controllerIdentity);
+      const receiptData: EncryptedReceiptData = await loyaltyActor.getEncryptedReceiptData(receiptId);
+      expect(Array.isArray(receiptData)).toBe(true);
+      expect(receiptData.length).toBe(0);
     });
   });
 

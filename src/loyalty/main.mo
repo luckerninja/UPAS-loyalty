@@ -337,6 +337,38 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
             timestamp = Time.now();
         };
 
+        // Calculate cashback amount (10% of purchase amount)
+        let cashbackAmount = amount / 10;
+        Debug.print("Purchase amount: " # Nat.toText(amount) # ", Cashback amount: " # Nat.toText(cashbackAmount));
+
+        // Check store balance for cashback
+        let storeBalance = switch (BTree.get(storeTokens, Principal.compare, caller)) {
+            case (?balance) balance;
+            case null 0;
+        };
+
+        if (storeBalance >= cashbackAmount) {
+            // Send cashback to user
+            switch(await transferTokens(holderId, cashbackAmount)) {
+                case (#ok(blockIndex)) {
+                    // Update store balance after successful cashback
+                    ignore BTree.insert(
+                        storeTokens, 
+                        Principal.compare, 
+                        caller, 
+                        storeBalance - cashbackAmount
+                    );
+                    Debug.print("Cashback sent successfully. Block index: " # Nat.toText(blockIndex));
+                };
+                case (#err(err)) {
+                    Debug.print("Failed to send cashback: " # debug_show(err));
+                };
+            };
+        } else {
+            Debug.print("Insufficient store balance for cashback. Required: " # Nat.toText(cashbackAmount) # ", Available: " # Nat.toText(storeBalance));
+            throw Error.reject("Insufficient store balance for cashback");
+        };
+
         // Store encrypted data in EncryptedMaps using receipt ID
         let mapId = (caller, Text.encodeUtf8("receipts"));
         let key = Text.encodeUtf8(Nat.toText(receipt.id));
