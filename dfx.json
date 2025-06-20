@@ -28,6 +28,16 @@
       "packtool": "mops sources"
     }
   },
+  "ecdsa_keys": [
+    {
+      "key_name": "dfx_test_key",
+      "curve": "secp256k1"
+    },
+    {
+      "key_name": "test_key_1",
+      "curve": "secp256k1"
+    }
+  ],
   "output_env_file": ".env",
   "version": 1
 }

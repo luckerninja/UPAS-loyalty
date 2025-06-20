@@ -51,6 +51,7 @@ module {
         userId: Principal;
         timestamp: Int;
         signature: [Nat8];
+        canisterSignature: ?Text; // Optional canister signature
         metadata: ?Text;
     };
 
@@ -125,6 +126,7 @@ module {
         userId: Principal,
         timestamp: Int,
         signature: [Nat8],
+        canisterSignature: ?Text,
         metadata: ?Text
     ) : IssuedTag {
         {
@@ -132,6 +134,7 @@ module {
             userId = userId;
             timestamp = timestamp;
             signature = signature;
+            canisterSignature = canisterSignature;
             metadata = metadata;
         }
     };

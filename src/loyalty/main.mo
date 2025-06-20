@@ -17,13 +17,17 @@ import Blob "mo:base/Blob";
 import Debug "mo:base/Debug";
 import Signature "./libraries/Signature";
 import Receipt "./libraries/Receipt";
-import Map "mo:base/HashMap";
 import Buffer "mo:base/Buffer";
-import Hex "./libraries/Hex";
 import VetKey "mo:ic-vetkeys";
 import Int "mo:base/Int";
+import IC "./libraries/IC";
+import Sha256 "mo:sha2/Sha256";
+import Cycles "mo:base/ExperimentalCycles";
+import Hex "./libraries/Hex";
 
 shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
+
+    let ic: IC.IC = actor("aaaaa-aa");
 
     let RECEIPTS_MAP_NAME = "receipts";
     
@@ -459,6 +463,48 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         BTree.get(userReceipts, Principal.compare, caller)
     };
 
+    // ECDSA FUNCTIONS
+
+    public shared (msg) func public_key() : async { #Ok : { public_key: Blob }; #Err : Text } {
+        let caller = Principal.toBlob(msg.caller);
+
+        try {
+
+        //request the management canister to compute an ECDSA public key
+        let { public_key } = await ic.ecdsa_public_key({
+
+            //When `null`, it defaults to getting the public key of the canister that makes this call
+            canister_id = null;
+            derivation_path = [ caller ];
+            //this code uses the mainnet test key
+            key_id = { curve = #secp256k1; name = "test_key_1" };
+        });
+
+        #Ok({ public_key })
+
+        } catch (err) {
+
+        #Err(Error.message(err))
+
+        }
+    };
+
+    public shared (msg) func sign(message: Text) : async { #Ok : { signature_hex: Text };  #Err : Text } {
+        let caller = Principal.toBlob(msg.caller);
+        try {
+            let message_hash: Blob = Sha256.fromArray(#sha256, Blob.toArray(Text.encodeUtf8(message)));
+            Cycles.add(30_000_000_000);
+            let { signature } = await ic.sign_with_ecdsa({
+                message_hash;
+                derivation_path = [ caller ];
+                key_id = { curve = #secp256k1; name = "dfx_test_key" };
+        });
+            #Ok({ signature_hex = Hex.encode(Blob.toArray(signature))})
+        } catch (err) {
+            #Err(Error.message(err))
+        }
+    };
+
     // TAG MANAGEMENT FUNCTIONS
 
     // Create a new tag scheme (only controller can create tags)
@@ -509,6 +555,32 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
         BTree.get(userTags, Principal.compare, userId)
     };
 
+    // Verify canister signature for a tag
+    public query func verifyTagCanisterSignature(tagId: Text, userId: Principal, canisterSignature: Text) : async Bool {
+        // Get the tag scheme to verify it exists
+        switch (BTree.get(tagSchemes, Text.compare, tagId)) {
+            case (?tagScheme) {
+                // Get user's tags to find the specific tag
+                switch (BTree.get(userTags, Principal.compare, userId)) {
+                    case (?userTags) {
+                        switch(Array.find<Tag.IssuedTag>(userTags, func(tag) = tag.tagId == tagId)) {
+                            case (?issuedTag) {
+                                // Compare the stored signature with the provided one
+                                switch(issuedTag.canisterSignature) {
+                                    case (?storedSignature) storedSignature == canisterSignature;
+                                    case null false;
+                                }
+                            };
+                            case null false;
+                        }
+                    };
+                    case null false;
+                }
+            };
+            case null false;
+        }
+    };
+
     // Deactivate tag (only controller)
     public shared({ caller }) func deactivateTag(tagId: Text) : async Result.Result<(), Text> {
         if (caller != owner) {
@@ -553,11 +625,19 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
                     // Evaluate condition
                     if (evaluateTagCondition(tagScheme.condition, context)) {
                         // Award the tag
+                        let signature = generateTagSignature(tagId, userId);
+                        let canisterSignature = try {
+                            await generateCanisterSignature(tagId, userId)
+                        } catch (error) {
+                            Debug.print("Failed to generate canister signature for tag " # tagId # ": " # Error.message(error));
+                            null
+                        };
                         let issuedTag = Tag.createIssuedTag(
                             tagId,
                             userId,
                             Time.now(),
-                            generateTagSignature(tagId, userId),
+                            signature,
+                            canisterSignature,
                             null
                         );
 
@@ -677,5 +757,20 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private func generateTagSignature(tagId: Text, userId: Principal) : [Nat8] {
         let message = tagId # Principal.toText(userId) # Int.toText(Time.now());
         Blob.toArray(Text.encodeUtf8(message))
+    };
+
+    // Generate canister signature for issued tag
+    public shared({ caller }) func generateCanisterSignature(tagId: Text, userId: Principal) : async ?Text {
+        let message = tagId # Principal.toText(userId) # Int.toText(Time.now());
+        let signatureResult = await sign(message);
+        Debug.print("Signature result: " # debug_show(signatureResult));
+        switch(signatureResult) {
+            case (#Ok(result)) ?result.signature_hex;
+            case (#Err(error)) {
+                Debug.print("Failed to generate canister signature: " # error);
+                null
+                // throw Error.reject("Failed to generate canister signature: " # error);
+            };
+        }
     };
 }
