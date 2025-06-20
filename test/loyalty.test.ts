@@ -553,7 +553,7 @@ describe('Loyalty System', () => {
       const userTags = await loyaltyActor.getUserTags(userIdentity.getPrincipal());
       expect(userTags).toBeDefined();
       expect(userTags[0].length).toBe(1);
-      expect(userTags[0][0].tagId).toBe(tagId);
+      expect(userTags[0][0].schemeId).toBe(tagId);
     });
 
     it('should not award a tag if conditions are not met', async () => {
