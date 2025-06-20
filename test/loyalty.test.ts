@@ -295,7 +295,7 @@ describe('Loyalty System', () => {
       
       // Store multiple receipts
       loyaltyActor.setIdentity(storeIdentity);
-      const receiptIds = [];
+      const receiptIds: bigint[] = [];
       for (const purchase of purchases) {
         const receiptId = await loyaltyActor.storeReceipt(purchase.data, userIdentity.getPrincipal(), purchase.amount);
         expect(typeof receiptId).toBe('bigint');
@@ -451,6 +451,234 @@ describe('Loyalty System', () => {
       expect(storeHistory[0].length).toBe(1);
       expect(storeHistory[0][0].reward).toBe(100n);
       expect(storeHistory[0][0].schemeId).toBe(schemeId);
+    });
+  });
+
+  describe('tag system', () => {
+    beforeEach(async () => {
+      // A store is needed for many tag-related operations like receipt conditions
+      loyaltyActor.setIdentity(controllerIdentity);
+      const ec = new EC('secp256k1');
+      const keyPair = ec.genKeyPair();
+      await loyaltyActor.addStore(
+        storeIdentity.getPrincipal(),
+        "Super Store",
+        "A great store",
+        keyPair.getPublic(false, 'array')
+      );
+    });
+
+    it('should create a simple tag', async () => {
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "first_tag";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 1n, timeWindow: [] } } };
+      
+      const createResult = await loyaltyActor.createTag(
+        tagId,
+        "First Purchase",
+        "Awarded for the first purchase.",
+        condition,
+        "some-metadata"
+      );
+
+      expect(createResult).toHaveProperty('ok');
+      const okResult = createResult.ok;
+      expect(okResult).toBe(tagId);
+
+      const schemes = await loyaltyActor.listTagSchemes();
+      expect(schemes.length).toBe(1);
+      expect(schemes[0][0]).toBe(tagId);
+      expect(schemes[0][1].name).toBe("First Purchase");
+    });
+
+    it('should prevent unauthorized tag creation', async () => {
+      loyaltyActor.setIdentity(userIdentity); // Not the controller
+      const tagId = "unauthorized_tag";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 1n, timeWindow: [] } } };
+
+      const createResult = await loyaltyActor.createTag(
+        tagId, "Unauthorized", "Should fail", condition, ""
+      );
+
+      expect(createResult).toHaveProperty('err');
+      const errResult = createResult.err;
+      expect(errResult).toBe("Unauthorized: only controller can create tags");
+    });
+
+    it('should prevent duplicate tag creation', async () => {
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "duplicate_tag";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 1n, timeWindow: [] } } };
+      
+      await loyaltyActor.createTag(tagId, "Duplicate", "First creation", condition, "");
+      const secondCreateResult = await loyaltyActor.createTag(tagId, "Duplicate", "Second creation", condition, "");
+
+      expect(secondCreateResult).toHaveProperty('err');
+      const errResult = secondCreateResult.err;
+      expect(errResult).toBe("Tag with this ID already exists");
+    });
+
+    it('should deactivate a tag', async () => {
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "deactivate_me";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 1n, timeWindow: [] } } };
+      await loyaltyActor.createTag(tagId, "To Deactivate", "...", condition, "");
+
+      const deactivateResult = await loyaltyActor.deactivateTag(tagId);
+      expect(deactivateResult).toHaveProperty('ok');
+
+      const tagScheme = await loyaltyActor.getTagScheme(tagId);
+      expect(tagScheme[0].isActive).toBe(false);
+    });
+
+    it('should evaluate and award a tag for meeting a receipt count condition', async () => {
+      // 1. Create the tag
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "two_receipts_tag";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 2n, timeWindow: [] } } };
+      await loyaltyActor.createTag(tagId, "Two Receipts", "Buy two things", condition, "");
+
+      // 2. Fulfill the condition
+      loyaltyActor.setIdentity(storeIdentity);
+      await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n); // for cashback
+      await loyaltyActor.storeReceipt("receipt_1", userIdentity.getPrincipal(), 100n);
+      await loyaltyActor.storeReceipt("receipt_2", userIdentity.getPrincipal(), 100n);
+
+      // 3. Evaluate tags for the user
+      loyaltyActor.setIdentity(controllerIdentity); // Evaluation can be triggered by anyone
+      const awardedTags = await loyaltyActor.evaluateUserTags(userIdentity.getPrincipal());
+      expect(awardedTags).toEqual([tagId]);
+
+      // 4. Verify user has the tag
+      const userTags = await loyaltyActor.getUserTags(userIdentity.getPrincipal());
+      expect(userTags).toBeDefined();
+      expect(userTags[0].length).toBe(1);
+      expect(userTags[0][0].tagId).toBe(tagId);
+    });
+
+    it('should not award a tag if conditions are not met', async () => {
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "five_receipts_tag";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 5n, timeWindow: [] } } };
+      await loyaltyActor.createTag(tagId, "Five Receipts", "Buy five things", condition, "");
+
+      loyaltyActor.setIdentity(storeIdentity);
+      await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
+      await loyaltyActor.storeReceipt("receipt_1", userIdentity.getPrincipal(), 100n);
+
+      const awardedTags = await loyaltyActor.evaluateUserTags(userIdentity.getPrincipal());
+      expect(awardedTags.length).toBe(0);
+    });
+    
+    it('should evaluate a tag with a credential requirement', async () => {
+      // Setup: create a credential scheme and issue a credential
+      const ec = new EC('secp256k1');
+      const keyPair = ec.genKeyPair();
+      
+      loyaltyActor.setIdentity(storeIdentity);
+      const schemeId = await loyaltyActor.publishCredentialScheme("cred_scheme", "...", "...", 100n);
+      await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
+      
+      const timestamp = BigInt(Date.now()) * 1_000_000n;
+      // We need the keypair from the store that was created in the beforeEach block
+      // This is a limitation. For now we assume we can get it or we create a new store.
+      // Let's create a new store for this test to be self-contained with its key.
+      const localStoreIdentity = createIdentity('local_store_secret');
+      loyaltyActor.setIdentity(controllerIdentity);
+      await loyaltyActor.addStore(localStoreIdentity.getPrincipal(), "CredStore", "...", keyPair.getPublic(false, 'array'));
+      loyaltyActor.setIdentity(localStoreIdentity);
+      const localSchemeId = await loyaltyActor.publishCredentialScheme("local_cred_scheme", "...", "...", 100n);
+      await exActor.mintAndTransferToStore(localStoreIdentity.getPrincipal(), 1000n);
+
+      const { signature } = await createCredentialSignature(localSchemeId, localStoreIdentity.getPrincipal(), userIdentity.getPrincipal(), timestamp, 100, keyPair);
+      await loyaltyActor.issueCredential(localSchemeId, userIdentity.getPrincipal(), signature, timestamp);
+
+      // 1. Create tag requiring the credential
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "cred_holder_tag";
+      const condition = { Simple: { CredentialRequired: { schemeId: localSchemeId, issuerNames: [] } } };
+      await loyaltyActor.createTag(tagId, "Credential Holder", "...", condition, "");
+
+      // 2. Evaluate
+      const awardedTags = await loyaltyActor.evaluateUserTags(userIdentity.getPrincipal());
+      expect(awardedTags).toEqual([tagId]);
+    });
+    
+    it('should not award the same tag twice', async () => {
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "once_only_tag";
+      const condition = { Simple: { ReceiptCount: { storeNames: [], minCount: 1n, timeWindow: [] } } };
+      await loyaltyActor.createTag(tagId, "Once Only", "...", condition, "");
+
+      loyaltyActor.setIdentity(storeIdentity);
+      await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
+      await loyaltyActor.storeReceipt("receipt_1", userIdentity.getPrincipal(), 100n);
+
+      // First evaluation
+      let awardedTags = await loyaltyActor.evaluateUserTags(userIdentity.getPrincipal());
+      expect(awardedTags).toEqual([tagId]);
+
+      // Second evaluation
+      awardedTags = await loyaltyActor.evaluateUserTags(userIdentity.getPrincipal());
+      expect(awardedTags.length).toBe(0); // Should not award again
+
+      const userTags = await loyaltyActor.getUserTags(userIdentity.getPrincipal());
+      expect(userTags[0].length).toBe(1); // Still only one tag
+    });
+
+    it('should evaluate and award a tag for a complex OR condition', async () => {
+      // 1. Setup: Create a credential scheme for one part of the OR condition
+      const ec = new EC('secp256k1');
+      const keyPair = ec.genKeyPair();
+      const localStoreIdentity = createIdentity('or_test_store_secret');
+      loyaltyActor.setIdentity(controllerIdentity);
+      await loyaltyActor.addStore(localStoreIdentity.getPrincipal(), "OR-Store", "...", keyPair.getPublic(false, 'array'));
+      loyaltyActor.setIdentity(localStoreIdentity);
+      const schemeId = await loyaltyActor.publishCredentialScheme("or_scheme", "...", "...", 100n);
+
+      // 2. Create the tag with the complex OR condition
+      loyaltyActor.setIdentity(controllerIdentity);
+      const tagId = "complex_or_tag";
+      const condition = {
+        Or: [
+          { Simple: { ReceiptCount: { storeNames: [], minCount: 2n, timeWindow: [] } } },
+          { Simple: { CredentialRequired: { schemeId: schemeId, issuerNames: [] } } }
+        ]
+      };
+      await loyaltyActor.createTag(tagId, "Complex OR Tag", "...", condition, "");
+
+      // 3. Test Case 1: User has 2 receipts, but no credential. Should be awarded.
+      const user1 = createIdentity('user1_secret');
+      loyaltyActor.setIdentity(storeIdentity); // Use the general store for receipts
+      await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
+      await loyaltyActor.storeReceipt("or_receipt1", user1.getPrincipal(), 50n);
+      await loyaltyActor.storeReceipt("or_receipt2", user1.getPrincipal(), 50n);
+
+      let awardedTags = await loyaltyActor.evaluateUserTags(user1.getPrincipal());
+      expect(awardedTags).toEqual([tagId]);
+
+      // 4. Test Case 2: User has the credential, but only 1 receipt. Should be awarded.
+      const user2 = createIdentity('user2_secret');
+      // Issue the credential to user2
+      loyaltyActor.setIdentity(localStoreIdentity);
+      await exActor.mintAndTransferToStore(localStoreIdentity.getPrincipal(), 1000n);
+      const timestamp = BigInt(Date.now()) * 1_000_000n;
+      const { signature } = await createCredentialSignature(schemeId, localStoreIdentity.getPrincipal(), user2.getPrincipal(), timestamp, 100, keyPair);
+      await loyaltyActor.issueCredential(schemeId, user2.getPrincipal(), signature, timestamp);
+      // Give them one receipt
+      loyaltyActor.setIdentity(storeIdentity);
+      await loyaltyActor.storeReceipt("or_receipt3", user2.getPrincipal(), 50n);
+
+      awardedTags = await loyaltyActor.evaluateUserTags(user2.getPrincipal());
+      expect(awardedTags).toEqual([tagId]);
+      
+      // 5. Test Case 3: User has 1 receipt and no credential. Should NOT be awarded.
+      const user3 = createIdentity('user3_secret');
+      loyaltyActor.setIdentity(storeIdentity);
+      await loyaltyActor.storeReceipt("or_receipt4", user3.getPrincipal(), 50n);
+      
+      awardedTags = await loyaltyActor.evaluateUserTags(user3.getPrincipal());
+      expect(awardedTags.length).toBe(0);
     });
   });
 }); 

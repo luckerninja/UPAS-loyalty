@@ -1,5 +1,6 @@
 import Store "./libraries/Store";
 import Credential "./libraries/Credential";
+import Tag "./libraries/Tag";
 import Principal "mo:base/Principal";
 import BTree "mo:stableheapbtreemap/BTree";
 import Error "mo:base/Error";
@@ -32,6 +33,8 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     private stable let userCredentials = BTree.init<Principal, [Credential.IssuedCredential]>(?8);
     private stable let storeTokens = BTree.init<Principal, Nat>(?8);
     private stable let userReceipts = BTree.init<Principal, [Receipt.EncryptedReceipt]>(?8);
+    private stable let tagSchemes = BTree.init<Text, Tag.TagScheme>(?8);
+    private stable let userTags = BTree.init<Principal, [Tag.IssuedTag]>(?8);
 
 
     type EncryptedMaps = VetKey.EncryptedMaps.EncryptedMaps<VetKey.AccessRights>;
@@ -454,5 +457,225 @@ shared(msg) actor class LoyaltyProgram(externalCanisterId: Principal) {
     // Get user receipts
     public shared({ caller }) func getUserReceipts() : async ?[Receipt.EncryptedReceipt] {
         BTree.get(userReceipts, Principal.compare, caller)
+    };
+
+    // TAG MANAGEMENT FUNCTIONS
+
+    // Create a new tag scheme (only controller can create tags)
+    public shared({ caller }) func createTag(
+        id: Text,
+        name: Text,
+        description: Text,
+        condition: Tag.TagCondition,
+        metadata: Text
+    ) : async Result.Result<Text, Text> {
+        if (caller != owner) {
+            return #err("Unauthorized: only controller can create tags");
+        };
+
+        if (BTree.has(tagSchemes, Text.compare, id)) {
+            return #err("Tag with this ID already exists");
+        };
+
+        let tagScheme = Tag.createTagScheme(
+            id,
+            name,
+            description,
+            condition,
+            metadata,
+            caller
+        );
+
+        if (not Tag.validateTagScheme(tagScheme)) {
+            return #err("Invalid tag scheme");
+        };
+
+        ignore BTree.insert(tagSchemes, Text.compare, id, tagScheme);
+        #ok(id)
+    };
+
+    // Get all tag schemes
+    public query func listTagSchemes() : async [(Text, Tag.TagScheme)] {
+        BTree.toArray(tagSchemes)
+    };
+
+    // Get specific tag scheme
+    public query func getTagScheme(tagId: Text) : async ?Tag.TagScheme {
+        BTree.get(tagSchemes, Text.compare, tagId)
+    };
+
+    // Get user's tags
+    public query func getUserTags(userId: Principal) : async ?[Tag.IssuedTag] {
+        BTree.get(userTags, Principal.compare, userId)
+    };
+
+    // Deactivate tag (only controller)
+    public shared({ caller }) func deactivateTag(tagId: Text) : async Result.Result<(), Text> {
+        if (caller != owner) {
+            return #err("Unauthorized: only controller can deactivate tags");
+        };
+
+        switch (BTree.get(tagSchemes, Text.compare, tagId)) {
+            case (?tagScheme) {
+                let deactivatedTag = Tag.deactivateTag(tagScheme);
+                ignore BTree.insert(tagSchemes, Text.compare, tagId, deactivatedTag);
+                #ok()
+            };
+            case null #err("Tag not found");
+        }
+    };
+
+    // Evaluate and award tags for a user (can be called periodically or on events)
+    public shared({ caller }) func evaluateUserTags(userId: Principal) : async [Text] {
+        let context : Tag.TagContext = {
+            userId = userId;
+            currentTime = Time.now();
+        };
+
+        let awardedTags = Buffer.Buffer<Text>(0);
+        
+        // Get existing user tags to avoid duplicates
+        let existingTags = switch (BTree.get(userTags, Principal.compare, userId)) {
+            case (?tags) tags;
+            case null [];
+        };
+
+        // Check all active tag schemes
+        for ((tagId, tagScheme) in BTree.entries(tagSchemes)) {
+            if (tagScheme.isActive) {
+                // Check if user already has this tag
+                let hasTag = switch(Array.find<Tag.IssuedTag>(existingTags, func(issuedTag) = issuedTag.tagId == tagId)) {
+                    case (?_) true;
+                    case null false;
+                };
+
+                if (not hasTag) {
+                    // Evaluate condition
+                    if (evaluateTagCondition(tagScheme.condition, context)) {
+                        // Award the tag
+                        let issuedTag = Tag.createIssuedTag(
+                            tagId,
+                            userId,
+                            Time.now(),
+                            generateTagSignature(tagId, userId),
+                            null
+                        );
+
+                        let updatedTags = Array.append(existingTags, [issuedTag]);
+                        ignore BTree.insert(userTags, Principal.compare, userId, updatedTags);
+                        
+                        awardedTags.add(tagId);
+                    };
+                };
+            };
+        };
+
+        Buffer.toArray(awardedTags)
+    };
+
+    // Private function to evaluate tag conditions with access to canister data
+    private func evaluateTagCondition(condition: Tag.TagCondition, context: Tag.TagContext) : Bool {
+        switch(condition) {
+            case (#Simple(simpleCondition)) {
+                evaluateSimpleTagCondition(simpleCondition, context)
+            };
+            case (#And(conditions)) {
+                for (c in conditions.vals()) {
+                    if (not evaluateTagCondition(c, context)) {
+                        return false;
+                    };
+                };
+                true
+            };
+            case (#Or(conditions)) {
+                for (c in conditions.vals()) {
+                    if (evaluateTagCondition(c, context)) {
+                        return true;
+                    };
+                };
+                false
+            };
+        }
+    };
+
+    // Private function to evaluate simple tag conditions
+    private func evaluateSimpleTagCondition(condition: Tag.SimpleCondition, context: Tag.TagContext) : Bool {
+        switch(condition) {
+            case (#ReceiptCount({ storeNames; minCount; timeWindow })) {
+                evaluateReceiptCount(context.userId, storeNames, minCount, timeWindow, context.currentTime)
+            };
+            case (#TotalSpent({ storeNames; minAmount; timeWindow })) {
+                evaluateTotalSpent(context.userId, storeNames, minAmount, timeWindow, context.currentTime)
+            };
+            case (#CredentialRequired({ schemeId; issuerNames })) {
+                evaluateCredentialRequired(context.userId, schemeId, issuerNames)
+            };
+            case (#TagRequired({ tagId })) {
+                evaluateTagRequired(context.userId, tagId)
+            };
+        }
+    };
+
+    // Helper functions for condition evaluation
+    private func evaluateReceiptCount(userId: Principal, storeNames: [Text], minCount: Nat, timeWindow: ?Int, currentTime: Int) : Bool {
+        var count : Nat = 0;
+        
+        // Inefficiently iterate through all stores and their receipt histories.
+        // A dedicated user->receipts mapping would be better for performance.
+        for ((storeId, store) in BTree.entries(stores)) {
+            // TODO: Filter by storeNames if not empty. Requires store name to be on receipt or a lookup.
+            
+            for (receipt in store.receiptHistory.vals()) {
+                if (receipt.holderId == userId) {
+                    let inWindow = switch(timeWindow) {
+                        case (?win) receipt.timestamp >= currentTime - win;
+                        case null true;
+                    };
+
+                    if (inWindow) {
+                        count += 1;
+                    };
+                };
+            };
+        };
+        
+        return count >= minCount;
+    };
+
+    private func evaluateTotalSpent(userId: Principal, storeNames: [Text], minAmount: Nat, timeWindow: ?Int, currentTime: Int) : Bool {
+        // This condition cannot be implemented currently as the 'amount' of a purchase
+        // is not stored in the ReceiptHistory. The data structure would need to be
+        // updated to support this feature.
+        false
+    };
+
+    private func evaluateCredentialRequired(userId: Principal, schemeId: Text, issuerNames: [Text]) : Bool {
+        switch (BTree.get(userCredentials, Principal.compare, userId)) {
+            case (?credentials) {
+                switch(Array.find<Credential.IssuedCredential>(credentials, func(cred) = cred.schemeId == schemeId)) {
+                    case (?_) true;
+                    case null false;
+                }
+            };
+            case null false;
+        }
+    };
+
+    private func evaluateTagRequired(userId: Principal, tagId: Text) : Bool {
+        switch (BTree.get(userTags, Principal.compare, userId)) {
+            case (?tags) {
+                switch(Array.find<Tag.IssuedTag>(tags, func(tag) = tag.tagId == tagId)) {
+                    case (?_) true;
+                    case null false;
+                }
+            };
+            case null false;
+        }
+    };
+
+    // Generate signature for issued tag (placeholder implementation)
+    private func generateTagSignature(tagId: Text, userId: Principal) : [Nat8] {
+        let message = tagId # Principal.toText(userId) # Int.toText(Time.now());
+        Blob.toArray(Text.encodeUtf8(message))
     };
 }
