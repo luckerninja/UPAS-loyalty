@@ -119,6 +119,7 @@ describe('Loyalty System', () => {
   beforeEach(async () => {
     pic = await PocketIc.create(PIC_URL, {
       nns: { state: { type: SubnetStateType.New } },
+      ii: { state: { type: SubnetStateType.New } },
       application: [
         { state: { type: SubnetStateType.New } },
       ]
@@ -702,19 +703,29 @@ describe('Loyalty System', () => {
       const userTags = await loyaltyActor.getUserTags(userIdentity.getPrincipal());
       expect(userTags).toBeDefined();
       expect(userTags[0].length).toBe(1);
-      expect(userTags[0][0].tagId).toBe(tagId);
+      expect(userTags[0][0].schemeId).toBe(tagId);
       
       // Debug: log the actual structure
       console.log('User tag structure:', JSON.stringify(userTags[0][0], (key, value) => 
         typeof value === 'bigint' ? value.toString() : value, 2));
       
       // canisterSignature is optional, so check if it exists and is a string
-      if (userTags[0][0].canisterSignature) {
-        expect(typeof userTags[0][0].canisterSignature).toBe('object');
-        expect(userTags[0][0].canisterSignature.length).toBeGreaterThan(0);
+      const canisterSignature = userTags[0][0].canisterSignature;
+      if (canisterSignature && Array.isArray(canisterSignature) && canisterSignature.length > 0) {
+        // We have a signature in array format
+        expect(typeof canisterSignature[0]).toBe('string');
+        
+        // Verify the signature
+        const signatureString = canisterSignature[0];
+        const isValid = await loyaltyActor.verifyTagCanisterSignature(
+          tagId,
+          userIdentity.getPrincipal(),
+          signatureString
+        );
+        expect(isValid).toBe(true);
       } else {
-        // If signature is not generated, that's also acceptable for now
-        console.log('Canister signature not generated - this is acceptable');
+        // If signature is not generated, the test should fail
+        throw new Error('Canister signature was not generated or is in the wrong format.');
       }
     });
 
@@ -728,25 +739,24 @@ describe('Loyalty System', () => {
       loyaltyActor.setIdentity(storeIdentity);
       await exActor.mintAndTransferToStore(storeIdentity.getPrincipal(), 1000n);
       await loyaltyActor.storeReceipt("verification_receipt", userIdentity.getPrincipal(), 100n);
-
+      
       loyaltyActor.setIdentity(controllerIdentity);
       await loyaltyActor.evaluateUserTags(userIdentity.getPrincipal());
 
       // 2. Get the issued tag with signature
       const userTags = await loyaltyActor.getUserTags(userIdentity.getPrincipal());
-      expect(userTags[0].length).toBe(1);
-      const issuedTag = userTags[0][0];
-      
-      // Debug: log the actual structure
-      console.log('Issued tag structure:', JSON.stringify(issuedTag, (key, value) => 
-        typeof value === 'bigint' ? value.toString() : value, 2));
+      const issuedTag = userTags[0].find((t: any) => t.schemeId === tagId);
+      expect(issuedTag).toBeDefined();
       
       // 3. Verify the signature (only if canisterSignature exists and is a string)
-      if (issuedTag.canisterSignature && typeof issuedTag.canisterSignature === 'string') {
+      const canisterSignature = issuedTag.canisterSignature;
+      if (canisterSignature && Array.isArray(canisterSignature) && canisterSignature.length > 0) {
+        // We have a signature in array format
+        const signatureString = canisterSignature[0];
         const isValid = await loyaltyActor.verifyTagCanisterSignature(
           tagId,
           userIdentity.getPrincipal(),
-          issuedTag.canisterSignature
+          signatureString
         );
         expect(isValid).toBe(true);
 
@@ -758,8 +768,8 @@ describe('Loyalty System', () => {
         );
         expect(isInvalid).toBe(false);
       } else {
-        // If signature is not generated, skip verification test
-        console.log('Canister signature not available - skipping verification test');
+        // If signature is not generated, the test should fail
+        throw new Error('Canister signature was not generated or is in the wrong format.');
       }
     });
   });
